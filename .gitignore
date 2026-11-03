@@ -1,0 +1,7 @@
+node_modules/
+.wrangler/
+.dev.vars
+public/instruments.json
+__pycache__/
+android-shell/*
+!android-shell/.gitkeep

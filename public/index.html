@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<title>Dhan Pulse</title>
+<link rel="manifest" href="manifest.json">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">DHAN <em>Pulse</em></div>
+  <div class="meta"><span id="mkt" class="pill">—</span><span id="stamp">—</span><button id="refresh" aria-label="Refresh">↻</button></div>
+</header>
+<div id="banner" hidden></div>
+<main id="view"></main>
+<nav class="tabs" id="tabs">
+  <button data-t="overview" class="on">Overview</button>
+  <button data-t="sectors">Sectors</button>
+  <button data-t="movers">Movers</button>
+  <button data-t="portfolio">Portfolio</button>
+  <button data-t="watch">Watch</button>
+  <button data-t="settings">⚙</button>
+</nav>
+<script src="app.js" type="module"></script>
+</body>
+</html>

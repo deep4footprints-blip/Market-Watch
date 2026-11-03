@@ -1,0 +1,7 @@
+{
+  "appId": "app.deep.dhanpulse",
+  "appName": "Dhan Pulse",
+  "webDir": "../public",
+  "backgroundColor": "#000000",
+  "plugins": { "CapacitorHttp": { "enabled": true } }
+}
