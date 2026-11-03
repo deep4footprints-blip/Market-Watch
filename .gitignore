@@ -2,6 +2,8 @@ node_modules/
 .wrangler/
 .dev.vars
 public/instruments.json
+public/dhan-pulse.apk
 __pycache__/
 android-shell/*
 !android-shell/.gitkeep
+!android-shell/debug.keystore

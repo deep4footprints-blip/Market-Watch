@@ -9,16 +9,16 @@ Browser PWA ──access-token──▶ api.dhan.co/v2   (quote, holdings, posit
 ```
 
 ## Setup
-1. Push to GitHub (`main`). Repo → Settings → Pages → Source: **GitHub Actions**.
-2. Open the Pages URL → ⚙ → client id + token (web.dhan.co → Profile → Access DhanHQ APIs) → Validate & save.
-3. Add to home screen.
+1. Repo → Settings → Pages → Source: **GitHub Actions**. Push to `main` (or run the workflow).
+2. On your phone open `https://<user>.github.io/<repo>/dhan-pulse.apk`, install it (allow "install unknown apps" for your browser once).
+3. Open the app → ⚙ → Dhan client id + token (web.dhan.co → Profile → Access DhanHQ APIs) → Validate & save.
 
-The token lasts 24h. On open, if it is >8h old and still valid, the app calls `RenewToken` and stores the new one, so opening it at least once a day keeps it alive. If it lapses, paste a new one. Settings shows the real expiry (decoded from the token).
+Every push rebuilds the APK with the same signing key, so reinstalling updates in place and keeps your saved token. The same page also works as a web app/PWA at the Pages URL (needs Dhan to allow browser CORS; the APK does not).
 
-## The one risk: CORS
-Browsers only let a page call `api.dhan.co` if Dhan sends CORS headers. I could not test this from the build sandbox. If the app shows "Could not reach Dhan from the browser… CORS", run **Actions → Build Android APK → Run workflow** and install the APK from the artifact: the same UI wrapped in Capacitor with native HTTP, which has no CORS restriction. (Not yet run; first build may need a tweak.)
+The token lasts 24h. On open, if it is >8h old and still valid, the app calls `RenewToken` and stores the new one. Open the app at least once a day; if it lapses, paste a new one. Settings shows the real expiry.
 
 ## Notes
+- The APK is signed with a debug key committed in `android-shell/debug.keystore` (so updates install over each other). Fine for a personal sideloaded app; do not publish it to a store.
 - Public repo is fine: no secrets are in it. The page is public but useless without your token.
 - Anyone with your unlocked device can read the saved token. Use a device lock; no PIN/TOTP secret is ever stored.
 - To verify on first live run: `net_change` is treated as absolute change vs previous close (falls back to `ohlc.close`); index names are matched by alias, and the build fails loudly if fewer than 8 match (`instruments.json` then lists `_allIndexNames`).
