@@ -59,6 +59,7 @@ COLS = {
     "custom": ["SEM_CUSTOM_SYMBOL", "DISPLAY_NAME"],
     "name": ["SM_SYMBOL_NAME", "SYMBOL_NAME"],
     "series": ["SEM_SERIES", "SERIES"],
+    "lot": ["SEM_LOT_UNITS", "LOT_SIZE"],
 }
 
 
@@ -98,8 +99,15 @@ def build(text, min_indices, min_fno):
         return (row.get(c[key]) or "").strip() if c[key] else ""
 
     index_rows, fno_syms, equities = [], set(), {}
+    lot_votes = {}
     for row in rd:
         exch, seg, inst = g(row, "exch"), g(row, "seg"), g(row, "inst")
+        if inst == "OPTIDX":
+            und = g(row, "tsym").split("-")[0].upper()
+            try:
+                lot_votes.setdefault(und, []).append(int(float(g(row, "lot"))))
+            except ValueError:
+                pass
         if seg == "I" or inst == "INDEX":
             index_rows.append(row)
         elif exch == "NSE" and seg == "D" and inst == "FUTSTK":
@@ -135,7 +143,14 @@ def build(text, min_indices, min_fno):
     if len(fno) < min_fno:
         raise SystemExit(f"only {len(fno)} F&O stocks resolved (need {min_fno})")
 
+    lots = {}
+    for und in ("NIFTY", "SENSEX"):
+        votes = lot_votes.get(und)
+        if votes:
+            lots[und] = max(set(votes), key=votes.count)  # most common lot size across live contracts
+
     return {
+        "lots": lots,
         "generated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "indices": indices,
         "fno": fno,
@@ -156,7 +171,7 @@ def main():
     out = build(text, a.min_indices, a.min_fno)
     with open(a.out, "w", encoding="utf-8") as f:
         json.dump(out, f, separators=(",", ":"))
-    print(f"indices={len(out['indices'])} fno={len(out['fno'])} eq={len(out['eq'])} unmatched={out['_unmatched']}", file=sys.stderr)
+    print(f"lots={out['lots']} indices={len(out['indices'])} fno={len(out['fno'])} eq={len(out['eq'])} unmatched={out['_unmatched']}", file=sys.stderr)
 
 
 if __name__ == "__main__":

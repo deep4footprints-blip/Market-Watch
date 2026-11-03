@@ -20,6 +20,11 @@ def sample():
         rows.append(f"NSE,E,{1000+i},EQUITY,STK{i},Stock {i},STOCK {i} LTD,EQ")
         rows.append(f"NSE,D,{5000+i},FUTSTK,STK{i}-Nov2026-FUT,STK{i} FUT,STOCK,")
     rows.append("NSE,E,9999,EQUITY,NOFNO,No Fno,NO FNO LTD,EQ")
+    rows[0] += ",SEM_LOT_UNITS"
+    rows[1:] = [r + "," for r in rows[1:]]
+    rows.append("NSE,D,7001,OPTIDX,NIFTY-Nov2026-24000-CE,x,NIFTY,,65")
+    rows.append("NSE,D,7002,OPTIDX,NIFTY-Nov2026-24000-PE,x,NIFTY,,65")
+    rows.append("BSE,D,7003,OPTIDX,SENSEX-Nov2026-80000-CE,x,SENSEX,,20")
     return "\n".join(rows)
 
 
@@ -31,6 +36,7 @@ class T(unittest.TestCase):
         self.assertEqual(len(out["fno"]), 60)
         self.assertEqual(out["fno"][0]["id"] // 1000, 1)  # uses NSE_EQ id, not the futures id
         self.assertEqual(len(out["eq"]), 61)
+        self.assertEqual(out["lots"], {"NIFTY": 65, "SENSEX": 20})
 
     def test_fails_loudly_when_too_few_indices(self):
         with self.assertRaises(SystemExit):

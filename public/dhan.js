@@ -21,8 +21,7 @@ const num = (v) => {
  * because Dhan allows 1 market-quote request per second.
  */
 export function createDhanClient({ fetchFn, getCreds, minGapMs = 1100 }) {
-  let chain = Promise.resolve();
-  let last = 0;
+  const lanes = {}; // per-endpoint-family rate limiting: quotes 1 req/s, option chain 1 req/3s
 
   async function raw(path, { method = "GET", body } = {}) {
     const { token, clientId } = await getCreds();
@@ -48,16 +47,17 @@ export function createDhanClient({ fetchFn, getCreds, minGapMs = 1100 }) {
     return json;
   }
 
-  function call(path, opts = {}, { throttle = false } = {}) {
+  function call(path, opts = {}, { throttle = false, lane = "q", gap = minGapMs } = {}) {
     if (!throttle) return raw(path, opts);
+    const ln = (lanes[lane] ||= { chain: Promise.resolve(), last: 0 });
     const run = async () => {
-      const wait = last + minGapMs - Date.now();
+      const wait = ln.last + gap - Date.now();
       if (wait > 0) await sleep(wait);
-      last = Date.now();
+      ln.last = Date.now();
       return raw(path, opts);
     };
-    const p = chain.then(run);
-    chain = p.catch(() => {});
+    const p = ln.chain.then(run);
+    ln.chain = p.catch(() => {});
     return p;
   }
 
@@ -88,6 +88,14 @@ export function createDhanClient({ fetchFn, getCreds, minGapMs = 1100 }) {
     positions: () => call("/positions"),
     profile: () => call("/profile"),
     renewToken: () => call("/RenewToken"),
+    expiryList: async (id, seg) => {
+      const j = await call("/optionchain/expirylist", { method: "POST", body: { UnderlyingScrip: id, UnderlyingSeg: seg } }, { throttle: true, lane: "oc", gap: minGapMs ? 3100 : 0 });
+      return (Array.isArray(j?.data) ? j.data : []).map(String).sort();
+    },
+    optionChain: async (id, seg, expiry) => {
+      const j = await call("/optionchain", { method: "POST", body: { UnderlyingScrip: id, UnderlyingSeg: seg, Expiry: expiry } }, { throttle: true, lane: "oc", gap: minGapMs ? 3100 : 0 });
+      return normalizeChain(j);
+    },
     raw: call,
   };
 }
@@ -221,4 +229,43 @@ export async function loadWatch(client, items, now = new Date()) {
     asOf: now.toISOString(),
     items: ids.map((id) => ({ id, ...(quotes.get(`NSE_EQ:${id}`) || {}) })),
   };
+}
+
+const optSide = (o) =>
+  o
+    ? {
+        ltp: num(o.last_price),
+        iv: num(o.implied_volatility),
+        delta: num(o.greeks?.delta),
+        gamma: num(o.greeks?.gamma),
+        theta: num(o.greeks?.theta),
+        vega: num(o.greeks?.vega),
+        oi: num(o.oi),
+        prevOi: num(o.previous_oi),
+        vol: num(o.volume),
+        bid: num(o.top_bid_price),
+        ask: num(o.top_ask_price),
+      }
+    : null;
+
+/** Dhan /optionchain -> { spot, strikes[], rows[{strike,ce,pe}], atm, atmIv, step }. IV is returned as-is (Dhan sends percent). */
+export function normalizeChain(json) {
+  const d = json?.data || {};
+  const spot = num(d.last_price);
+  const rows = Object.entries(d.oc || {})
+    .map(([k, v]) => ({ strike: parseFloat(k), ce: optSide(v?.ce), pe: optSide(v?.pe) }))
+    .filter((r) => Number.isFinite(r.strike) && (r.ce || r.pe))
+    .sort((a, b) => a.strike - b.strike);
+  const strikes = rows.map((r) => r.strike);
+  let atm = null, step = null;
+  if (spot != null && strikes.length) atm = strikes.reduce((b, k) => (Math.abs(k - spot) < Math.abs(b - spot) ? k : b), strikes[0]);
+  if (strikes.length > 1) {
+    const diffs = strikes.slice(1).map((k, i) => k - strikes[i]).sort((a, b) => a - b);
+    step = diffs[Math.floor(diffs.length / 2)];
+  }
+  const ar = rows.find((r) => r.strike === atm);
+  const ivs = [ar?.ce?.iv, ar?.pe?.iv].filter((v) => v > 0);
+  const raw = ivs.length ? ivs.reduce((a, b) => a + b, 0) / ivs.length : null;
+  const atmIv = raw == null ? null : raw > 3 ? raw / 100 : raw;
+  return { spot, strikes, rows, byStrike: new Map(rows.map((r) => [r.strike, r])), atm, atmIv, step };
 }

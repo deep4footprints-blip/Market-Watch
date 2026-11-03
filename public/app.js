@@ -1,4 +1,5 @@
 import { createDhanClient, buildSnapshot, loadPortfolio, loadWatch } from "./dhan.js";
+import { createPayoff } from "./payoff-ui.js";
 
 const $ = (s) => document.querySelector(s);
 const LS = {
@@ -21,6 +22,7 @@ let timer = null, busy = false;
 
 const creds = () => LS.get("dhan", { token: "", clientId: "" });
 const client = createDhanClient({ fetchFn: (...a) => fetch(...a), getCreds: async () => creds() });
+const pf = createPayoff({ client, LS, getInst: () => loadInst(), friendly: (e) => friendly(e), hasCreds: () => !!creds().token });
 const err = (message, code) => Object.assign(new Error(message), { code });
 
 // Decode the JWT expiry (Dhan access tokens are JWTs). Returns ms epoch or null.
@@ -88,6 +90,7 @@ function friendly(e) {
 }
 
 async function refresh() {
+  if (tab === "payoff") { pf.refresh(); return; }
   if (busy || tab === "settings") return;
   busy = true;
   try {
@@ -189,6 +192,7 @@ const views = {
     return `<h2>Watchlist</h2><input id="q" placeholder="Search NSE symbol…" autocomplete="off" autocapitalize="characters"><div id="sug"></div>
     ${rows || '<div class="empty">Search a symbol to add it.</div>'}`;
   },
+  payoff() { return `<div id="pf"></div>`; },
   settings() {
     return `<h2>Settings</h2>
     <h3>Dhan credentials</h3>
@@ -229,6 +233,7 @@ function bind() {
       LS.set("watch", LS.get("watch", []).filter((x) => String(x.id) !== b.dataset.rm)); render(); refresh();
     }));
   }
+  if (tab === "payoff") pf.mount($("#pf"));
   if (tab === "settings") {
     $("#saveTok").onclick = async () => {
       try { await saveToken($("#tok").value, $("#cid").value); $("#tok").value = ""; banner(""); loadStatus(); }

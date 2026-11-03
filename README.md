@@ -17,6 +17,12 @@ Every push rebuilds the APK with the same signing key, so reinstalling updates i
 
 The token lasts 24h. On open, if it is >8h old and still valid, the app calls `RenewToken` and stores the new one. Open the app at least once a day; if it lapses, paste a new one. Settings shows the real expiry.
 
+## Payoff terminal (Nifty + Sensex, analysis only)
+Build multi-leg option strategies from the live Dhan option chain: 14 templates (straddles, strangles, vertical spreads, iron condor/butterfly, butterflies, 1x2 ratios), editable legs, expiry + "today" payoff curves, breakevens, max profit/loss, probability of profit, per-leg and portfolio greeks, scenario sliders (time passed, IV shift, spot move), saved strategies. It never places or stages orders.
+- Pricing is Black-Scholes at 6.5% rate, no dividends, each leg's live IV. POP / expected P&L are model values, not forecasts.
+- Lot sizes come from the scrip master at build time (editable in the tab if NSE/BSE revise them).
+- Dhan limits the option chain to 1 request / 3 s, so the first load takes ~3-6 s.
+
 ## Notes
 - The APK is signed with a debug key committed in `android-shell/debug.keystore` (so updates install over each other). Fine for a personal sideloaded app; do not publish it to a store.
 - Public repo is fine: no secrets are in it. The page is public but useless without your token.

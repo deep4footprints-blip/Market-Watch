@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildSnapshot, createDhanClient, DhanError, loadPortfolio, loadWatch, normalizeQuote } from "../public/dhan.js";
+import { normalizeChain, buildSnapshot, createDhanClient, DhanError, loadPortfolio, loadWatch, normalizeQuote } from "../public/dhan.js";
 
 const mkFetch = (routes, log = []) => async (url, init) => {
   const path = url.replace("https://api.dhan.co/v2", "");
@@ -86,4 +86,29 @@ test("loadWatch dedupes and caps ids", async () => {
   const w = await loadWatch(c, [{ id: 5 }, { id: "5" }, { id: "x" }]);
   assert.equal(w.items.length, 1);
   assert.equal(w.items[0].pct, (1 / 9) * 100);
+});
+
+test("normalizeChain: strikes sorted, ATM, step, ATM IV as decimal", () => {
+  const c = normalizeChain({ data: { last_price: 24012, oc: {
+    "24100.000000": { ce: { last_price: 80, implied_volatility: 11, greeks: { delta: 0.4 } }, pe: { last_price: 150, implied_volatility: 12 } },
+    "24000.000000": { ce: { last_price: 130, implied_volatility: 10, oi: 5 }, pe: { last_price: 100, implied_volatility: 10.5 } },
+    "24050.000000": { ce: { last_price: 100, implied_volatility: 10 }, pe: null },
+  } } });
+  assert.deepEqual(c.strikes, [24000, 24050, 24100]);
+  assert.equal(c.atm, 24000);
+  assert.equal(c.step, 50);
+  assert.ok(Math.abs(c.atmIv - 0.1025) < 1e-9);
+  assert.equal(c.byStrike.get(24100).ce.delta, 0.4);
+});
+
+test("optionChain posts the documented body and expiry list sorts", async () => {
+  const log = [];
+  const c = client({
+    "/optionchain": (init) => ({ data: { last_price: 100, oc: { "100.0": { ce: { last_price: 1 }, pe: { last_price: 1 } } } }, echo: JSON.parse(init.body) }),
+    "/optionchain/expirylist": { data: ["2026-11-27", "2026-11-06"] },
+  }, log);
+  const ex = await c.expiryList(13, "IDX_I");
+  assert.deepEqual(ex, ["2026-11-06", "2026-11-27"]);
+  await c.optionChain(13, "IDX_I", "2026-11-06");
+  assert.deepEqual(JSON.parse(log[1].init.body), { UnderlyingScrip: 13, UnderlyingSeg: "IDX_I", Expiry: "2026-11-06" });
 });
