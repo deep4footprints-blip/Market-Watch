@@ -79,3 +79,5 @@ table.oc{width:100%;border-collapse:collapse;font:12px var(--mono)}
 .oc td.iv{color:var(--mute)}
 .oc td.oi{position:relative;min-width:44px;color:var(--mute)}.oc td.oi i{position:absolute;inset:3px auto 3px 0;opacity:1}.oc td.oi span{position:relative}
 .pf-save{display:flex;gap:8px}.pf-save input{margin:0}
+.occtl{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:6px 0}
+.occtl .note{margin:0 auto 0 0}

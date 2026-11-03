@@ -32,13 +32,14 @@ export function createPayoff({ client, LS, getInst, friendly, hasCreds }) {
     expiry: saved.expiry || null,
     legs: Array.isArray(saved.legs) ? saved.legs : [],
     width: saved.width || 2,
+    depth: [15, 20, 25, 30, 35, 40].includes(saved.depth) ? saved.depth : 15, // strikes shown each side of ATM
     lot: saved.lot || {},
     tap: "B", days: 0, ivShift: 0, move: 0,
     expiries: {}, chain: null, busy: false, again: false, msg: "",
     strategies: LS.get("pfSaved", []),
     geom: null, root: null, instLots: null,
   };
-  const persist = () => LS.set("pf", { und: S.und, expiry: S.expiry, legs: S.legs, width: S.width, lot: S.lot });
+  const persist = () => LS.set("pf", { und: S.und, expiry: S.expiry, legs: S.legs, width: S.width, depth: S.depth, lot: S.lot });
   const lotSize = () => S.lot[S.und] || S.instLots?.[UND[S.und].key] || UND[S.und].lot;
   const $ = (id) => S.root?.querySelector(id);
 
@@ -279,12 +280,16 @@ export function createPayoff({ client, LS, getInst, friendly, hasCreds }) {
     const ch = S.chain;
     if (!ch?.rows.length) return `<div class="empty">No chain loaded.</div>`;
     const i0 = Math.max(ch.strikes.indexOf(ch.atm), 0);
-    const rows = ch.rows.slice(Math.max(i0 - 10, 0), i0 + 11);
+    const rows = ch.rows.slice(Math.max(i0 - S.depth, 0), i0 + S.depth + 1);
+    const maxAvail = Math.min(i0, ch.rows.length - 1 - i0); // strikes actually available on the thinner side
     const mx = Math.max(1, ...rows.map((r) => Math.max(r.ce?.oi || 0, r.pe?.oi || 0)));
     const oi = (o, tone) => `<td class="oi"><i style="width:${((o?.oi || 0) / mx) * 100}%;background:${tone}"></i><span>${o?.oi ? (o.oi / 1e5).toFixed(1) : ""}</span></td>`;
     const px = (r, t, K) => { const o = side(r, t); const p = premium(r, t); return `<td class="px" data-add="${t}:${K}">${p != null ? num(p) : "—"}</td>`; };
     const iv = (o) => `<td class="iv">${o?.iv > 0 ? (o.iv > 3 ? o.iv : o.iv * 100).toFixed(1) : ""}</td>`;
-    return `<table class="oc"><thead><tr><th>OI L</th><th>IV</th><th>CE</th><th>Strike</th><th>PE</th><th>IV</th><th>OI L</th></tr></thead><tbody>${rows.map((r) =>
+    const more = S.depth < 40 && S.depth < maxAvail, less = S.depth > 15;
+    const ctl = `<div class="occtl"><span class="note">Showing ±${Math.min(S.depth, maxAvail)} strikes around ATM</span>
+      ${less ? `<button class="chip" data-depth="-5">Show less</button>` : ""}${more ? `<button class="chip" data-depth="5">Show 5 more each side</button><button class="chip" data-depth="40">Max ±${Math.min(40, maxAvail)}</button>` : ""}</div>`;
+    return `${ctl}<table class="oc"><thead><tr><th>OI L</th><th>IV</th><th>CE</th><th>Strike</th><th>PE</th><th>IV</th><th>OI L</th></tr></thead><tbody>${rows.map((r) =>
       `<tr class="${r.strike === ch.atm ? "atm" : ""}">${oi(r.ce, "#2ecc8f33")}${iv(r.ce)}${px(r, "CE", r.strike)}<td class="k">${num(r.strike, 0)}</td>${px(r, "PE", r.strike)}${iv(r.pe)}${oi(r.pe, "#ff5c5c33")}</tr>`).join("")}</tbody></table>`;
   }
 
@@ -323,6 +328,11 @@ export function createPayoff({ client, LS, getInst, friendly, hasCreds }) {
       if (t.dataset.u) { if (t.dataset.u !== S.und) { S.und = t.dataset.u; S.expiry = null; S.legs = []; S.chain = null; persist(); renderAll(); load(); } return; }
       if (t.dataset.t) return applyTemplate(t.dataset.t);
       if (t.dataset.add) { const [ty, k] = t.dataset.add.split(":"); return addLeg(ty, parseFloat(k), S.tap === "B" ? 1 : -1); }
+      if (t.dataset.depth) {
+        const d = +t.dataset.depth;
+        S.depth = d === 40 ? 40 : clamp(S.depth + d, 15, 40);
+        persist(); $("#pf-chain").innerHTML = chainHtml(); return;
+      }
       if (t.dataset.tap) { S.tap = t.dataset.tap; root.querySelectorAll("[data-tap]").forEach((b) => b.classList.toggle("on", b.dataset.tap === S.tap)); return; }
       if (t.dataset.ld != null) return loadStrategy(+t.dataset.ld);
       if (t.dataset.dl != null) { S.strategies.splice(+t.dataset.dl, 1); LS.set("pfSaved", S.strategies); return renderSaved(); }
