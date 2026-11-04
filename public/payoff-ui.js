@@ -1,5 +1,7 @@
 // Payoff terminal UI. Analysis only: it reads the Dhan option chain and never places or prepares orders.
-import { analyze, bsPrice, expiryPnl, impliedVol, legGreeks, portfolioGreeks, scenarioPnl, TEMPLATES } from "./payoff.js";
+import { analyze, bsPrice, expiryPnl, impliedVol, legGreeks, legQty, portfolioGreeks, scenarioPnl, TEMPLATES } from "./payoff.js";
+import { morph } from "./dom.js";
+import * as V from "./viz.js";
 
 const UND = {
   nifty50: { name: "Nifty", key: "NIFTY", id: 13, seg: "IDX_I", lot: 65 },
@@ -25,7 +27,7 @@ const tYears = (exp) => {
 };
 const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
 
-export function createPayoff({ client, LS, getInst, friendly, hasCreds }) {
+export function createPayoff({ client, LS, getInst, friendly, hasCreds, getQuote = () => null }) {
   const saved = LS.get("pf", {});
   const S = {
     und: UND[saved.und] ? saved.und : "nifty50",
@@ -37,8 +39,9 @@ export function createPayoff({ client, LS, getInst, friendly, hasCreds }) {
     tap: "B", days: 0, ivShift: 0, move: 0,
     expiries: {}, chain: null, busy: false, again: false, msg: "",
     strategies: LS.get("pfSaved", []),
-    geom: null, root: null, instLots: null,
+    geom: null, root: null, instLots: null, live: null, scrubbing: false,
   };
+  const ivs = () => S.ivShift / 100; // slider is in vol points, IVs are decimals
   const persist = () => LS.set("pf", { und: S.und, expiry: S.expiry, legs: S.legs, width: S.width, depth: S.depth, lot: S.lot });
   const lotSize = () => S.lot[S.und] || S.instLots?.[UND[S.und].key] || UND[S.und].lot;
   const $ = (id) => S.root?.querySelector(id);
@@ -77,9 +80,15 @@ export function createPayoff({ client, LS, getInst, friendly, hasCreds }) {
   function ctx() {
     const ch = S.chain;
     if (!ch || !fin(ch.spot)) return null;
-    const Tn = tYears(S.expiry);
-    const legs = S.legs.filter((l) => fin(l.entry) && fin(l.iv));
-    return { ch, spot: ch.spot, Tn, Ts: Math.max(Tn - S.days / 365, 0), lot: lotSize(), legs, scn: ch.spot * (1 + S.move / 100), atmIv: ch.atmIv || (legs.length ? legs.reduce((a, l) => a + l.iv, 0) / legs.length : 0.15) };
+    const spot = S.live && Date.now() - S.live.t < 5000 ? S.live.v : ch.spot; // 1 s index quote beats the 3 s chain spot
+    const Tn = tYears(S.expiry), lot = lotSize();
+    const all = S.legs.filter((l) => fin(l.entry) && fin(l.iv));
+    const exited = all.filter((l) => fin(l.exit)), legs = all.filter((l) => !fin(l.exit));
+    // Exited legs: realised = (exit - entry) x qty.  Open legs: (LTP - entry) x qty (model price if the strike has no traded price).
+    const realized = exited.reduce((a, l) => a + legQty(l, lot) * (l.exit - l.entry), 0);
+    let mark = 0;
+    for (const l of legs) { const p = premium(ch.byStrike.get(l.strike), l.type); mark += legQty(l, lot) * ((p != null ? p : bsPrice(l.type, spot, l.strike, Tn, l.iv)) - l.entry); }
+    return { ch, spot, Tn, Ts: Math.max(Tn - S.days / 365, 0), lot, all, legs, exited, realized, mark, total: realized + mark, scn: spot * (1 + S.move / 100), atmIv: ch.atmIv || (legs.length ? legs.reduce((a, l) => a + l.iv, 0) / legs.length : 0.15) };
   }
 
   // ---------- loading ----------
@@ -155,7 +164,7 @@ export function createPayoff({ client, LS, getInst, friendly, hasCreds }) {
     $("#pf-und").innerHTML = Object.entries(UND).map(([k, u]) => `<button data-u="${k}" class="${k === S.und ? "on" : ""}">${u.name}</button>`).join("");
     const opts = list.map((e) => `<option value="${e}" ${e === S.expiry ? "selected" : ""}>${e}</option>`).join("");
     if ($("#pf-exp").dataset.sig !== opts) { $("#pf-exp").innerHTML = opts; $("#pf-exp").dataset.sig = opts; } // avoid closing an open dropdown on refresh
-    $("#pf-spot").innerHTML = ch ? `<b>${num(ch.spot)}</b> <small class="flat">${S.expiry ? `· ${(tYears(S.expiry) * 365).toFixed(1)}d to expiry` : ""}${ch.atmIv ? ` · ATM IV ${(ch.atmIv * 100).toFixed(1)}%` : ""}</small>` : "";
+    renderSpot();
     $("#pf-msg").textContent = S.msg || (S.busy && !ch ? "Loading option chain…" : "");
     $("#pf-msg").hidden = !$("#pf-msg").textContent;
     if (!$("#pf-tpl").children.length) $("#pf-tpl").innerHTML = TEMPLATES.map((t) => `<button class="chip" data-t="${t.id}">${t.name}</button>`).join("");
@@ -172,6 +181,12 @@ export function createPayoff({ client, LS, getInst, friendly, hasCreds }) {
     setVal("#pf-mv", S.move);
     renderSliderLabels();
   }
+  function renderSpot() {
+    const c = ctx(), u = UND[S.und], el = $("#pf-spot");
+    if (!el) return;
+    el.dataset.c = [u.seg, u.id, "INDEX", u.name, u.name].join("|");
+    el.innerHTML = c ? `<b>${num(c.spot)}</b> <small class="flat">${S.expiry ? `· ${(c.Tn * 365).toFixed(1)}d to expiry` : ""}${c.ch.atmIv ? ` · ATM IV ${(c.ch.atmIv * 100).toFixed(1)}%` : ""} · tap for chart</small>` : "";
+  }
   function renderSliderLabels() {
     $("#v-days").textContent = S.days === 0 ? "now" : `+${S.days}d`;
     $("#v-iv").textContent = `${S.ivShift > 0 ? "+" : ""}${S.ivShift} pts`;
@@ -182,13 +197,14 @@ export function createPayoff({ client, LS, getInst, friendly, hasCreds }) {
   function renderLegs() {
     const box = $("#pf-legs");
     if (!S.legs.length) { box.innerHTML = `<div class="empty">No legs yet. Pick a template, or tap a price in the chain below.</div>`; return; }
-    box.innerHTML = S.legs.map((l, i) => `<div class="leg" data-i="${i}">
+    box.innerHTML = S.legs.map((l, i) => `<div class="leg ${fin(l.exit) ? "done" : ""}" data-i="${i}">
       <div class="lh">
         <button class="bs ${l.side > 0 ? "b" : "s"}" data-a="flip" aria-label="Flip buy/sell">${l.side > 0 ? "BUY" : "SELL"}</button>
         <b class="ty">${l.type}</b>
         <span class="st"><button data-a="k-" aria-label="Lower strike">‹</button><span>${num(l.strike, 0)}</span><button data-a="k+" aria-label="Higher strike">›</button></span>
         <span class="st"><button data-a="l-" aria-label="Fewer lots">−</button><span>${l.lots}</span><button data-a="l+" aria-label="More lots">+</button></span>
-        <input class="en" data-a="entry" type="number" step="0.05" inputmode="decimal" value="${fin(l.entry) ? +l.entry.toFixed(2) : ""}" aria-label="Entry premium">
+        <input class="en" data-a="entry" type="number" step="0.05" inputmode="decimal" value="${fin(l.entry) ? +l.entry.toFixed(2) : ""}" placeholder="Entry" aria-label="Entry price">
+        <input class="en ex" data-a="exit" type="number" step="0.05" inputmode="decimal" value="${fin(l.exit) ? +l.exit.toFixed(2) : ""}" placeholder="Exit" aria-label="Exit price (leave empty while the leg is open)">
         <button class="x-btn" data-a="rm" aria-label="Remove leg">✕</button>
       </div>
       <div class="lg"></div></div>`).join("");
@@ -198,25 +214,33 @@ export function createPayoff({ client, LS, getInst, friendly, hasCreds }) {
     S.root?.querySelectorAll(".leg").forEach((el) => {
       const l = S.legs[+el.dataset.i], cell = el.querySelector(".lg");
       if (!l || !cell) return;
+      el.classList.toggle("done", fin(l.exit));
       if (!c || !fin(l.entry) || !fin(l.iv)) { cell.textContent = "—"; return; }
+      const q = legQty(l, c.lot);
+      if (fin(l.exit)) {
+        const real = q * (l.exit - l.entry);
+        cell.innerHTML = `<b class="tagx">EXITED</b> ${num(l.entry)} → ${num(l.exit)} · realised P&amp;L (exit − entry) <b class="${cls(real)}">${money(real)}</b>`;
+        return;
+      }
       const row = c.ch.byStrike.get(l.strike);
-      const ltp = premium(row, l.type);
-      const g = legGreeks(l, c.lot, c.scn, c.Ts, S.ivShift);
-      const now = scenarioPnl([l], c.lot, c.scn, c.Ts, S.ivShift);
-      cell.innerHTML = `LTP <b>${num(ltp)}</b> · IV <b>${(l.iv * 100).toFixed(1)}%</b> · Δ <b>${num(g.delta, 1)}</b> · Γ <b>${num(g.gamma, 3)}</b> · Θ <b class="${cls(g.theta)}">${num(g.theta, 0)}</b> · ν <b class="${cls(g.vega)}">${num(g.vega, 0)}</b> · P&amp;L <b class="${cls(now)}">${money(now)}</b>`;
+      const p = premium(row, l.type), ltp = p != null ? p : bsPrice(l.type, c.spot, l.strike, c.Tn, l.iv);
+      const g = legGreeks(l, c.lot, c.scn, c.Ts, ivs());
+      const open = q * (ltp - l.entry);
+      cell.innerHTML = `LTP <b>${num(ltp)}</b> · IV <b>${(l.iv * 100).toFixed(1)}%</b> · Δ <b>${num(g.delta, 1)}</b> · Γ <b>${num(g.gamma, 3)}</b> · Θ <b class="${cls(g.theta)}">${num(g.theta, 0)}</b> · ν <b class="${cls(g.vega)}">${num(g.vega, 0)}</b> · P&amp;L (LTP − entry) <b class="${cls(open)}">${money(open)}</b>`;
     });
   }
 
   function chartHtml(c, an) {
-    if (!c.legs.length) return `<div class="empty">Add legs to see the payoff.</div>`;
+    if (!c.all.length) return `<div class="empty">Add legs to see the payoff.</div>`;
+    if (!c.legs.length) return `<div class="empty">All legs are exited. Realised P&amp;L <b class="${cls(c.realized)}">${money(c.realized)}</b>. Clear an exit price to reopen a leg.</div>`;
     const W = 360, H = 250, Lm = 46, Rm = 8, Tm = 10, Bm = 22;
     const sd = an?.sd || c.spot * 0.01;
     const ks = c.legs.map((l) => l.strike);
     const lo = Math.max(Math.min(c.spot - 2.5 * sd, ...ks.map((k) => k - sd)), c.spot * 0.5);
     const hi = Math.max(c.spot + 2.5 * sd, ...ks.map((k) => k + sd));
     const N = 160, xs = Array.from({ length: N + 1 }, (_, i) => lo + ((hi - lo) * i) / N);
-    const ye = xs.map((x) => expiryPnl(c.legs, c.lot, x));
-    const ys = xs.map((x) => scenarioPnl(c.legs, c.lot, x, c.Ts, S.ivShift));
+    const ye = xs.map((x) => expiryPnl(c.legs, c.lot, x) + c.realized);
+    const ys = xs.map((x) => scenarioPnl(c.legs, c.lot, x, c.Ts, ivs()) + c.realized);
     let mn = Math.min(0, ...ye, ...ys), mx = Math.max(0, ...ye, ...ys);
     const pad = (mx - mn || 1) * 0.08; mn -= pad; mx += pad;
     const X = (v) => Lm + ((v - lo) / (hi - lo)) * (W - Lm - Rm);
@@ -246,28 +270,42 @@ export function createPayoff({ client, LS, getInst, friendly, hasCreds }) {
   }
 
   function statsHtml(c, an) {
-    if (!an) return "";
+    const pnlCard = `<div class="card pnl"><div class="n">P&amp;L now</div><div class="v ${cls(c.total)}">${money(c.total)}</div>
+      <div class="note">Realised <b class="${cls(c.realized)}">${money(c.realized)}</b> (exited: exit − entry) · Open <b class="${cls(c.mark)}">${money(c.mark)}</b> (LTP − entry)</div></div>`;
+    if (!an) return c.all.length ? `<div class="stats">${pnlCard}</div>` : "";
     const rr = fin(an.maxProfit) && fin(an.maxLoss) && an.maxLoss < 0 ? `${(an.maxProfit / -an.maxLoss).toFixed(2)} : 1` : "—";
     const card = (n, v, k = "") => `<div class="card"><div class="n">${n}</div><div class="v sm ${k}">${v}</div></div>`;
-    const pe = expiryPnl(c.legs, c.lot, c.scn), ps = scenarioPnl(c.legs, c.lot, c.scn, c.Ts, S.ivShift);
-    return `<div class="stats">
+    const pe = expiryPnl(c.legs, c.lot, c.scn) + c.realized, ps = scenarioPnl(c.legs, c.lot, c.scn, c.Ts, ivs()) + c.realized;
+    // infographic row: probability gauge + profit-zone strip + reward/risk bar
+    const sd = an.sd || c.spot * 0.01, lo = c.spot - 2.5 * sd, hi = c.spot + 2.5 * sd;
+    const samples = Array.from({ length: 64 }, (_, i) => expiryPnl(c.legs, c.lot, lo + ((hi - lo) * (i + 0.5)) / 64) + c.realized);
+    const popCol = !fin(an.pop) ? V.C.mute : an.pop >= 0.5 ? V.C.up : an.pop >= 0.3 ? V.C.acc : V.C.dn;
+    const rrBar = fin(an.maxProfit) && fin(an.maxLoss) && an.maxLoss < 0
+      ? `${V.stack([{ v: an.maxProfit, color: V.C.up, label: "Max profit" }, { v: -an.maxLoss, color: V.C.dn, label: "Max loss" }])}<div class="rl"><span class="up">${money(an.maxProfit)}</span><span>reward : risk ${rr}</span><span class="dn">${money(an.maxLoss)}</span></div>`
+      : `<div class="rl"><span class="up">${an.unlimitedProfit ? "Unlimited profit" : money(an.maxProfit)}</span><span></span><span class="dn">${an.unlimitedLoss ? "Unlimited loss" : money(an.maxLoss)}</span></div>`;
+    return `${pnlCard}
+    <div class="card vrow">${V.gauge(an.pop, { label: fin(an.pop) ? `${(an.pop * 100).toFixed(0)}%` : "—", sub: "probability of profit", color: popCol })}
+      <div class="vcol"><div class="n">Profit zone at expiry (±2.5σ)</div>${V.zoneStrip(samples, 0.5)}<div class="rl"><span>${num(lo, 0)}</span><span>spot ${num(c.spot, 0)}</span><span>${num(hi, 0)}</span></div>
+      <div class="n" style="margin-top:12px">Reward vs risk</div>${rrBar}</div></div>
+    <div class="stats">
       ${card(an.netPremium >= 0 ? "Net credit" : "Net debit", money(Math.abs(an.netPremium)).replace("+", ""), an.netPremium >= 0 ? "up" : "dn")}
       ${card("Max profit", an.unlimitedProfit ? "Unlimited" : money(an.maxProfit), "up")}
       ${card("Max loss", an.unlimitedLoss ? "Unlimited" : money(an.maxLoss), "dn")}
-      ${card("Reward : risk", rr)}
-      ${card("Prob. of profit", fin(an.pop) ? `${(an.pop * 100).toFixed(0)}%` : "—")}
       ${card("Expected P&amp;L", money(an.expected), cls(an.expected))}
       ${card("Breakeven" + (an.breakevens.length === 1 ? "" : "s"), an.breakevens.length ? an.breakevens.map((b) => num(b, 0)).join(" · ") : "none")}
       ${card("1σ range", fin(an.sd) ? `${num(c.spot - an.sd, 0)} – ${num(c.spot + an.sd, 0)}` : "—")}
     </div>
-    <div class="note">At ${num(c.scn, 0)}: expiry <b class="${cls(pe)}">${money(pe)}</b> · ${S.days ? `T+${S.days}d` : "today"} <b class="${cls(ps)}">${money(ps)}</b>. POP and expected P&amp;L are model values (lognormal at ATM IV, risk-neutral), not forecasts.</div>`;
+    <div class="note">At ${num(c.scn, 0)}: expiry <b class="${cls(pe)}">${money(pe)}</b> · ${S.days ? `T+${S.days}d` : "today"} <b class="${cls(ps)}">${money(ps)}</b>. Max/expected/POP include realised P&amp;L of exited legs. POP and expected P&amp;L are model values (lognormal at ATM IV, risk-neutral), not forecasts.</div>`;
   }
 
   function greeksHtml(c) {
     if (!c.legs.length) return `<div class="empty">—</div>`;
-    const g = portfolioGreeks(c.legs, c.lot, c.scn, c.Ts, S.ivShift);
+    const g = portfolioGreeks(c.legs, c.lot, c.scn, c.Ts, ivs());
     const card = (n, v, sub, k) => `<div class="card"><div class="n">${n}</div><div class="v sm ${k || ""}">${v}</div><div class="note">${sub}</div></div>`;
-    return `<div class="stats">
+    const gross = c.legs.reduce((a, l) => a + Math.abs(legQty(l, c.lot)), 0) || 1, bias = g.delta / gross;
+    return `<div class="card vrow">${V.gauge((bias + 1) / 2, { label: `${bias > 0 ? "+" : ""}${(bias * 100).toFixed(0)}%`, sub: "directional bias (net Δ ÷ gross qty)", color: V.tone(bias) })}
+      <div class="vcol"><div class="n">Bearish ◂ ▸ Bullish</div><div class="note">Net delta ${num(g.delta, 1)} index units · Θ ${money(g.theta)}/day · ν ${money(g.vega)}/vol pt</div></div></div>
+    <div class="stats">
       ${card("Delta Δ", num(g.delta, 1), `${num(g.delta / c.lot, 2)} lots · ${money(g.delta * c.scn * 0.01)} per 1% move`, cls(g.delta))}
       ${card("Gamma Γ", num(g.gamma, 3), `Δ change per index point`, cls(g.gamma))}
       ${card("Theta Θ / day", money(g.theta), "time decay per calendar day", cls(g.theta))}
@@ -293,6 +331,33 @@ export function createPayoff({ client, LS, getInst, friendly, hasCreds }) {
       `<tr class="${r.strike === ch.atm ? "atm" : ""}">${oi(r.ce, "#2ecc8f33")}${iv(r.ce)}${px(r, "CE", r.strike)}<td class="k">${num(r.strike, 0)}</td>${px(r, "PE", r.strike)}${iv(r.pe)}${oi(r.pe, "#ff5c5c33")}</tr>`).join("")}</tbody></table>`;
   }
 
+  function structureHtml() {
+    const ch = S.chain;
+    if (!ch?.rows.length) return "";
+    let ce = 0, pe = 0;
+    for (const r of ch.rows) { ce += r.ce?.oi || 0; pe += r.pe?.oi || 0; }
+    const pcr = ce ? pe / ce : null;
+    let best = null;
+    for (const K of ch.strikes) {
+      let pain = 0;
+      for (const r of ch.rows) pain += (r.ce?.oi || 0) * Math.max(K - r.strike, 0) + (r.pe?.oi || 0) * Math.max(r.strike - K, 0);
+      if (!best || pain < best.pain) best = { K, pain };
+    }
+    const top = (t) => [...ch.rows].filter((r) => side(r, t)?.oi > 0).sort((a, b) => side(b, t).oi - side(a, t).oi).slice(0, 3).map((r) => num(r.strike, 0));
+    const i0 = Math.max(ch.strikes.indexOf(ch.atm), 0), win = ch.rows.slice(Math.max(i0 - 15, 0), i0 + 16);
+    const ar = ch.byStrike.get(ch.atm), straddle = (premium(ar, "CE") || 0) + (premium(ar, "PE") || 0);
+    const spot = ch.spot;
+    const iv = win.map((r) => { const v = [r.ce?.iv, r.pe?.iv].filter((x) => x > 0).map((x) => (x > 3 ? x : x * 100)); return { x: r.strike, y: v.length ? v.reduce((a, b) => a + b, 0) / v.length : null }; });
+    const pcrG = V.gauge(fin(pcr) ? clamp((pcr - 0.4) / 1.2, 0, 1) : null, { label: fin(pcr) ? pcr.toFixed(2) : "—", sub: "put/call ratio (OI)", color: V.C.acc });
+    return `<div class="card vrow">${pcrG}<div class="vcol">
+        <div class="kv"><span>Max pain</span><b>${best ? num(best.K, 0) : "—"}</b><small class="${cls(best ? best.K - spot : 0)}">${best ? `${best.K >= spot ? "+" : "−"}${Math.abs(best.K - spot).toFixed(0)} pts` : ""}</small></div>
+        <div class="kv"><span>Resistance (call OI)</span><b>${top("CE").join(" · ") || "—"}</b></div>
+        <div class="kv"><span>Support (put OI)</span><b>${top("PE").join(" · ") || "—"}</b></div>
+        <div class="kv"><span>ATM straddle</span><b>${straddle ? num(straddle) : "—"}</b><small>${straddle ? `±${((straddle / spot) * 100).toFixed(2)}% implied move` : ""}</small></div></div></div>
+      <div class="card"><div class="n">Open interest by strike <span class="flat">(<i class="dot" style="background:${V.C.up}"></i>calls <i class="dot" style="background:${V.C.dn}"></i>puts)</span></div>${V.pairBars(win.map((r) => ({ x: r.strike, a: r.ce?.oi || 0, b: r.pe?.oi || 0 })), { mark: ch.atm, fmtX: (x) => num(x, 0) })}</div>
+      <div class="card"><div class="n">IV smile (%, avg of call &amp; put)</div>${V.line(iv.map((p) => ({ x: p.x, y: p.y })), { mark: ch.atm, xfmt: (x) => num(x, 0) })}</div>`;
+  }
+
   function renderSaved() {
     $("#pf-saved").innerHTML = S.strategies.length
       ? S.strategies.map((s, i) => `<div class="row"><div class="s">${esc(s.name)}<small>${esc(UND[s.und]?.name || "")} · ${esc(s.expiry)} · ${s.legs.length} legs</small></div><button class="btn ghost" data-ld="${i}">Load</button><button class="x-btn" data-dl="${i}" aria-label="Delete">✕</button></div>`).join("")
@@ -304,10 +369,10 @@ export function createPayoff({ client, LS, getInst, friendly, hasCreds }) {
     const c = ctx();
     renderSliderLabels();
     if (!c) { $("#pf-chart").innerHTML = ""; $("#pf-stats").innerHTML = ""; $("#pf-greeks").innerHTML = ""; updateLegCells(null); return; }
-    const an = c.legs.length ? analyze(c.legs, c.lot, { spot: c.spot, T: c.Tn, atmIv: c.atmIv }) : null;
-    $("#pf-chart").innerHTML = chartHtml(c, an);
-    $("#pf-stats").innerHTML = statsHtml(c, an);
-    $("#pf-greeks").innerHTML = greeksHtml(c);
+    const an = c.legs.length ? analyze(c.legs, c.lot, { spot: c.spot, T: c.Tn, atmIv: c.atmIv, offset: c.realized }) : null;
+    if (!S.scrubbing) morph($("#pf-chart"), chartHtml(c, an)); // don't redraw under a finger that is scrubbing
+    morph($("#pf-stats"), statsHtml(c, an));
+    morph($("#pf-greeks"), greeksHtml(c));
     updateLegCells(c);
   }
 
@@ -315,7 +380,8 @@ export function createPayoff({ client, LS, getInst, friendly, hasCreds }) {
     if (!S.root || !S.root.isConnected) return;
     renderTop();
     if (!fromLoad || S.root.querySelectorAll(".leg").length !== S.legs.length) renderLegs();
-    $("#pf-chain").innerHTML = chainHtml();
+    morph($("#pf-chain"), chainHtml());
+    morph($("#pf-struct"), structureHtml());
     renderSaved();
     renderResults();
   }
@@ -325,13 +391,13 @@ export function createPayoff({ client, LS, getInst, friendly, hasCreds }) {
     root.addEventListener("click", (e) => {
       const t = e.target.closest("button, td[data-add]");
       if (!t) return;
-      if (t.dataset.u) { if (t.dataset.u !== S.und) { S.und = t.dataset.u; S.expiry = null; S.legs = []; S.chain = null; persist(); renderAll(); load(); } return; }
+      if (t.dataset.u) { if (t.dataset.u !== S.und) { S.und = t.dataset.u; S.expiry = null; S.legs = []; S.chain = null; S.live = null; persist(); renderAll(); load(); } return; }
       if (t.dataset.t) return applyTemplate(t.dataset.t);
       if (t.dataset.add) { const [ty, k] = t.dataset.add.split(":"); return addLeg(ty, parseFloat(k), S.tap === "B" ? 1 : -1); }
       if (t.dataset.depth) {
         const d = +t.dataset.depth;
         S.depth = d === 40 ? 40 : clamp(S.depth + d, 15, 40);
-        persist(); $("#pf-chain").innerHTML = chainHtml(); return;
+        persist(); morph($("#pf-chain"), chainHtml()); return;
       }
       if (t.dataset.tap) { S.tap = t.dataset.tap; root.querySelectorAll("[data-tap]").forEach((b) => b.classList.toggle("on", b.dataset.tap === S.tap)); return; }
       if (t.dataset.ld != null) return loadStrategy(+t.dataset.ld);
@@ -354,7 +420,7 @@ export function createPayoff({ client, LS, getInst, friendly, hasCreds }) {
       if (t.id === "pf-save") {
         const name = $("#pf-name").value.trim() || `${UND[S.und].name} ${new Date().toLocaleDateString("en-IN")}`;
         if (!S.legs.length) return;
-        S.strategies.unshift({ name, und: S.und, expiry: S.expiry, lot: lotSize(), legs: S.legs.map(({ type, strike, side, lots, entry }) => ({ type, strike, side, lots, entry })) });
+        S.strategies.unshift({ name, und: S.und, expiry: S.expiry, lot: lotSize(), legs: S.legs.map(({ type, strike, side, lots, entry, exit }) => ({ type, strike, side, lots, entry, exit: fin(exit) ? exit : null })) });
         S.strategies = S.strategies.slice(0, 30); LS.set("pfSaved", S.strategies); $("#pf-name").value = ""; renderSaved();
       }
     });
@@ -366,6 +432,10 @@ export function createPayoff({ client, LS, getInst, friendly, hasCreds }) {
       else if (t.dataset.a === "entry") {
         const i = +t.closest(".leg").dataset.i, v = parseFloat(t.value);
         if (fin(v) && v >= 0) { S.legs[i].entry = v; persist(); renderResults(); }
+      } else if (t.dataset.a === "exit") {
+        const i = +t.closest(".leg").dataset.i, v = parseFloat(t.value);
+        S.legs[i].exit = t.value.trim() === "" ? null : fin(v) && v >= 0 ? v : S.legs[i].exit; // empty = leg still open
+        persist(); renderResults();
       }
     });
     root.addEventListener("input", (e) => {
@@ -373,7 +443,12 @@ export function createPayoff({ client, LS, getInst, friendly, hasCreds }) {
       if (t.id === "pf-days") S.days = +t.value;
       else if (t.id === "pf-ivs") S.ivShift = +t.value;
       else if (t.id === "pf-mv") S.move = +t.value;
-      else return;
+      else if (t.dataset.a === "entry" || t.dataset.a === "exit") { // apply while typing; P&L updates live
+        const l = S.legs[+t.closest(".leg").dataset.i], v = parseFloat(t.value);
+        if (t.dataset.a === "exit") l.exit = t.value.trim() === "" ? null : fin(v) && v >= 0 ? v : l.exit;
+        else if (fin(v) && v >= 0) l.entry = v;
+        persist();
+      } else return;
       renderResults();
     });
     const readout = () => $("#pf-read");
@@ -385,11 +460,13 @@ export function createPayoff({ client, LS, getInst, friendly, hasCreds }) {
       const x = S.geom.lo + ((px - S.geom.Lm) / (S.geom.W - S.geom.Lm - S.geom.Rm)) * (S.geom.hi - S.geom.lo);
       const xl = svg.querySelector("#pf-xl");
       if (xl) { xl.setAttribute("x1", px); xl.setAttribute("x2", px); xl.setAttribute("opacity", ".7"); }
-      const pe = expiryPnl(c.legs, c.lot, x), ps = scenarioPnl(c.legs, c.lot, x, c.Ts, S.ivShift);
+      const pe = expiryPnl(c.legs, c.lot, x) + c.realized, ps = scenarioPnl(c.legs, c.lot, x, c.Ts, ivs()) + c.realized;
       readout().innerHTML = `${UND[S.und].name} <b>${num(x, 0)}</b> (${(((x / c.spot) - 1) * 100).toFixed(2)}%) · expiry <b class="${cls(pe)}">${money(pe)}</b> · ${S.days ? `T+${S.days}d` : "today"} <b class="${cls(ps)}">${money(ps)}</b>`;
     };
-    root.querySelector("#pf-chart").addEventListener("pointermove", scrub);
-    root.querySelector("#pf-chart").addEventListener("pointerdown", scrub);
+    const pc = root.querySelector("#pf-chart");
+    pc.addEventListener("pointermove", (e) => { if (e.pointerType === "mouse" || S.scrubbing) scrub(e); });
+    pc.addEventListener("pointerdown", (e) => { S.scrubbing = true; scrub(e); });
+    for (const ev of ["pointerup", "pointercancel", "pointerleave"]) pc.addEventListener(ev, () => { S.scrubbing = false; });
   }
 
   function loadStrategy(i) {
@@ -409,6 +486,7 @@ export function createPayoff({ client, LS, getInst, friendly, hasCreds }) {
       <select id="pf-w" class="mini" aria-label="Strike width in steps">${[1, 2, 3, 4, 5, 6, 8, 10].map((n) => `<option value="${n}">${n} step${n > 1 ? "s" : ""}</option>`).join("")}</select></h3>
     <div class="chips" id="pf-tpl"></div>
     <h3>Legs <span class="flat">· lot size</span> <input id="pf-lot" class="mini num" type="number" inputmode="numeric" aria-label="Lot size"> <button class="chip" id="pf-clear">Clear</button></h3>
+    <div class="note" style="margin:-4px 0 8px">Edit <b>Entry</b> and <b>Exit</b> prices per leg. Exit empty = open leg (P&amp;L = LTP − entry); exit filled = closed (P&amp;L = exit − entry).</div>
     <div id="pf-legs"></div>
     <h3>Payoff</h3>
     <div id="pf-chart"></div><div id="pf-read" class="note">Drag across the chart to read P&amp;L at any index level.</div>
@@ -418,6 +496,7 @@ export function createPayoff({ client, LS, getInst, friendly, hasCreds }) {
     <div class="sl"><label>Spot move <b id="v-mv"></b></label><input type="range" id="pf-mv" min="-6" max="6" step="0.1" value="0"></div>
     <h3>Outcome</h3><div id="pf-stats"></div>
     <h3>Portfolio greeks</h3><div id="pf-greeks"></div>
+    <h3>Market structure</h3><div id="pf-struct"></div>
     <h3>Option chain <span class="flat">· tap a price to</span>
       <span class="seg sm"><button data-tap="B" class="on">Buy</button><button data-tap="S">Sell</button></span></h3>
     <div class="ocw" id="pf-chain"></div>
@@ -434,6 +513,15 @@ export function createPayoff({ client, LS, getInst, friendly, hasCreds }) {
       bindOnce(root);
       renderAll();
       load();
+    },
+    underlyingId: () => UND[S.und].id,
+    /** Called every feed cycle (~1 s): fold the live index quote into spot, P&L, chart and greeks. */
+    tick() {
+      const u = UND[S.und], q = getQuote(u.seg, u.id);
+      if (q?.ltp) S.live = { v: q.ltp, t: Date.now() };
+      if (!S.root?.isConnected || !S.chain) return;
+      renderSpot();
+      renderResults();
     },
     /** Called by the app's refresh timer while this tab is open. Never rebuilds inputs, so dragging/typing is safe. */
     async refresh() {

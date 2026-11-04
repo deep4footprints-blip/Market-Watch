@@ -51,9 +51,16 @@ jobs:
           cp ../capacitor.config.json .
           npx cap add android
           npx cap sync android
-          # Fixed signing key so every build installs as an UPDATE over the previous one
-          mkdir -p ~/.android && cp debug.keystore ~/.android/debug.keystore
-          cd android && chmod +x gradlew && ./gradlew assembleDebug --no-daemon
+          cd ..
+          # Same signing key + increasing versionCode on every build => installs as an in-place update
+          python3 scripts/patch_android.py android-shell/android/app/build.gradle "$GITHUB_WORKSPACE/android-shell/debug.keystore" "${{ github.run_number }}"
+          cd android-shell/android && chmod +x gradlew && ./gradlew assembleDebug --no-daemon
+
+      - name: Record APK signature + version (must be identical signature across builds)
+        run: |
+          APK=android-shell/android/app/build/outputs/apk/debug/app-debug.apk
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          { echo '### APK'; "$BT/apksigner" verify --print-certs "$APK" | grep -E "SHA-256|signer #1" ; "$BT/aapt" dump badging "$APK" | grep -E "^package:"; } | tee -a "$GITHUB_STEP_SUMMARY" || true
 
       - name: Add APK to the site
         run: cp android-shell/android/app/build/outputs/apk/debug/app-debug.apk public/dhan-pulse.apk

@@ -92,6 +92,8 @@ export function createDhanClient({ fetchFn, getCreds, minGapMs = 1100 }) {
       const j = await call("/optionchain/expirylist", { method: "POST", body: { UnderlyingScrip: id, UnderlyingSeg: seg } }, { throttle: true, lane: "oc", gap: minGapMs ? 3100 : 0 });
       return (Array.isArray(j?.data) ? j.data : []).map(String).sort();
     },
+    intraday: (body) => call("/charts/intraday", { method: "POST", body }, { throttle: true, lane: "ch", gap: minGapMs ? 350 : 0 }),
+    historical: (body) => call("/charts/historical", { method: "POST", body }, { throttle: true, lane: "ch", gap: minGapMs ? 350 : 0 }),
     optionChain: async (id, seg, expiry) => {
       const j = await call("/optionchain", { method: "POST", body: { UnderlyingScrip: id, UnderlyingSeg: seg, Expiry: expiry } }, { throttle: true, lane: "oc", gap: minGapMs ? 3100 : 0 });
       return normalizeChain(j);
@@ -126,6 +128,7 @@ export function normalizeQuote(q) {
 
 export function buildSnapshot(inst, quotes, now = new Date()) {
   const indices = (inst.indices || []).map((ix) => ({
+    id: ix.id,
     key: ix.key,
     name: ix.name,
     group: ix.group,
@@ -134,7 +137,8 @@ export function buildSnapshot(inst, quotes, now = new Date()) {
 
   const stocks = (inst.fno || [])
     .map((s) => ({ id: s.id, sym: s.s, name: s.n, ...(quotes.get(`NSE_EQ:${s.id}`) || {}) }))
-    .filter((s) => s.ltp != null && s.pct != null);
+    .filter((s) => s.ltp != null && s.pct != null)
+    .map((s) => ({ ...s, turnover: s.volume != null ? s.volume * s.ltp : null }));
 
   const gainers = stocks.filter((s) => s.pct > 0).sort((a, b) => b.pct - a.pct).slice(0, 10);
   const losers = stocks.filter((s) => s.pct < 0).sort((a, b) => a.pct - b.pct).slice(0, 10);
@@ -145,47 +149,53 @@ export function buildSnapshot(inst, quotes, now = new Date()) {
     universe: "F&O stocks",
     total: stocks.length,
   };
-  return { asOf: now.toISOString(), indices, movers: { gainers, losers }, breadth };
+  const active = stocks.filter((s) => s.turnover != null).sort((a, b) => b.turnover - a.turnover).slice(0, 10);
+  return { asOf: now.toISOString(), indices, movers: { gainers, losers, active }, breadth };
 }
 
 const holdingSeg = (ex) => (String(ex).toUpperCase() === "BSE" ? "BSE_EQ" : "NSE_EQ");
 const isEmptyErr = (e) => e instanceof DhanError && (e.code === "DH-1111" || /no (holdings|positions)/i.test(e.message));
 
-export async function loadPortfolio(client, now = new Date()) {
+/** Network part: holdings + positions (no quotes). Empty portfolio is not an error. */
+export async function fetchBook(client) {
   const [h, p] = await Promise.all([
     client.holdings().catch((e) => (isEmptyErr(e) ? [] : Promise.reject(e))),
     client.positions().catch((e) => (isEmptyErr(e) ? [] : Promise.reject(e))),
   ]);
   const holdings = Array.isArray(h) ? h : [];
   const positions = (Array.isArray(p) ? p : []).filter((x) => (num(x.netQty) || 0) !== 0 || (num(x.realizedProfit) || 0) !== 0);
+  return { holdings, positions, at: Date.now() };
+}
 
-  const segs = { NSE_EQ: [], BSE_EQ: [], NSE_FNO: [], BSE_FNO: [], MCX_COMM: [] };
-  for (const x of holdings) segs[holdingSeg(x.exchange)].push(x.securityId);
-  for (const x of positions) if (segs[x.exchangeSegment]) segs[x.exchangeSegment].push(x.securityId);
-  for (const k of Object.keys(segs)) if (!segs[k].length) delete segs[k];
-  const quotes = Object.keys(segs).length ? await client.quotes(segs) : new Map();
+/** Instruments the book needs priced: { NSE_EQ:[ids], ... } */
+export function bookInstruments(book) {
+  const segs = {};
+  const add = (seg, id) => { (segs[seg] ||= []).push(id); };
+  for (const x of book?.holdings || []) add(holdingSeg(x.exchange), x.securityId);
+  for (const x of book?.positions || []) if (x.exchangeSegment) add(x.exchangeSegment, x.securityId);
+  return segs;
+}
 
+/** Pure part: book + quote Map -> view model. */
+export function buildPortfolio(book, quotes, now = new Date()) {
+  const { holdings = [], positions = [] } = book || {};
   const rows = holdings.map((x) => {
-    const q = quotes.get(`${holdingSeg(x.exchange)}:${x.securityId}`) || {};
+    const seg = holdingSeg(x.exchange);
+    const q = quotes.get(`${seg}:${x.securityId}`) || {};
     const qty = num(x.totalQty) || 0;
     const avg = num(x.avgCostPrice) || 0;
     const ltp = q.ltp ?? num(x.lastTradedPrice) ?? null;
     const invested = qty * avg;
     const value = ltp != null ? qty * ltp : null;
     return {
-      sym: x.tradingSymbol,
-      qty,
-      avg,
-      ltp,
-      pct: q.pct ?? null,
-      invested,
-      value,
+      sym: x.tradingSymbol, id: String(x.securityId), seg, qty, avg, ltp,
+      pct: q.pct ?? null, open: q.open ?? null, high: q.high ?? null, low: q.low ?? null,
+      invested, value,
       pnl: value != null ? value - invested : null,
       pnlPct: value != null && invested > 0 ? ((value - invested) / invested) * 100 : null,
       dayPnl: q.chg != null ? q.chg * qty : null,
     };
   });
-
   const sum = (arr, f) => arr.reduce((a, r) => a + (f(r) || 0), 0);
   const invested = sum(rows, (r) => r.invested);
   const value = sum(rows, (r) => r.value ?? r.invested);
@@ -194,41 +204,39 @@ export async function loadPortfolio(client, now = new Date()) {
     const real = num(x.realizedProfit) || 0;
     const unreal = num(x.unrealizedProfit) || 0;
     return {
-      sym: x.tradingSymbol,
-      product: x.productType,
-      netQty: num(x.netQty) || 0,
-      avg: num(x.costPrice) || num(x.buyAvg) || 0,
-      ltp: q.ltp ?? null,
-      pct: q.pct ?? null,
-      realized: real,
-      unrealized: unreal,
-      total: real + unreal,
+      sym: x.tradingSymbol, id: String(x.securityId), seg: x.exchangeSegment, product: x.productType,
+      netQty: num(x.netQty) || 0, avg: num(x.costPrice) || num(x.buyAvg) || 0,
+      ltp: q.ltp ?? null, pct: q.pct ?? null, realized: real, unrealized: unreal, total: real + unreal,
     };
   });
-
   return {
     asOf: now.toISOString(),
     summary: {
-      invested,
-      value,
-      pnl: value - invested,
+      invested, value, pnl: value - invested,
       pnlPct: invested > 0 ? ((value - invested) / invested) * 100 : null,
-      dayPnl: sum(rows, (r) => r.dayPnl),
-      positionsPnl: sum(pos, (r) => r.total),
-      holdingsCount: rows.length,
+      dayPnl: sum(rows, (r) => r.dayPnl), positionsPnl: sum(pos, (r) => r.total), holdingsCount: rows.length,
     },
     holdings: rows.sort((a, b) => Math.abs(b.dayPnl || 0) - Math.abs(a.dayPnl || 0)),
     positions: pos,
   };
 }
 
+export async function loadPortfolio(client, now = new Date()) {
+  const book = await fetchBook(client);
+  const segs = bookInstruments(book);
+  const quotes = Object.keys(segs).length ? await client.quotes(segs) : new Map();
+  return buildPortfolio(book, quotes, now);
+}
+
+export function buildWatch(items, quotes, now = new Date()) {
+  const ids = [...new Set((items || []).map((i) => Number(i.id)).filter(Number.isInteger))].slice(0, 100);
+  return { asOf: now.toISOString(), items: ids.map((id) => ({ id, ...(quotes.get(`NSE_EQ:${id}`) || {}) })) };
+}
+
 export async function loadWatch(client, items, now = new Date()) {
   const ids = [...new Set((items || []).map((i) => Number(i.id)).filter(Number.isInteger))].slice(0, 100);
   const quotes = ids.length ? await client.quotes({ NSE_EQ: ids }) : new Map();
-  return {
-    asOf: now.toISOString(),
-    items: ids.map((id) => ({ id, ...(quotes.get(`NSE_EQ:${id}`) || {}) })),
-  };
+  return buildWatch(items, quotes, now);
 }
 
 const optSide = (o) =>

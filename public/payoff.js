@@ -121,11 +121,13 @@ export function portfolioGreeks(legs, lot, S, T, ivShift = 0, r = RATE) {
  * Exact (not grid-based) expiry analytics: the expiry payoff is piecewise linear with kinks at strikes,
  * so extremes and breakevens are solved on the kinks. POP / expected value use a lognormal at atmIv.
  */
-export function analyze(legs, lot, { spot, T, atmIv, r = RATE }) {
+export function analyze(legs, lot, { spot, T, atmIv, r = RATE, offset = 0 }) {
   if (!legs.length) return null;
+  // offset = realised P&L of exited legs: a constant added to the whole payoff curve
+  const P = (x) => expiryPnl(legs, lot, x) + offset;
   const strikes = [...new Set(legs.map((l) => l.strike))].sort((a, b) => a - b);
   const xs = [0, ...strikes];
-  const ys = xs.map((x) => expiryPnl(legs, lot, x));
+  const ys = xs.map((x) => P(x));
   const rightSlope = legs.reduce((a, l) => a + (l.type === "CE" ? legQty(l, lot) : 0), 0);
   const netPremium = legs.reduce((a, l) => a - legQty(l, lot) * l.entry, 0); // + = credit received
 
@@ -157,11 +159,11 @@ export function analyze(legs, lot, { spot, T, atmIv, r = RATE }) {
     for (let i = 0; i < bounds.length - 1; i++) {
       const [a, b] = [bounds[i], bounds[i + 1]];
       const m = b === Infinity ? Math.max(a, xn) * 1.1 + 1 : (a + b) / 2;
-      if (expiryPnl(legs, lot, m) > 1e-9) pop += cdfAt(b) - cdfAt(a);
+      if (P(m) > 1e-9) pop += cdfAt(b) - cdfAt(a);
     }
     expected = 0;
     const dz = 0.01;
-    for (let z = -6; z <= 6; z += dz) expected += expiryPnl(legs, lot, Math.exp(mu + st * z)) * npdf(z) * dz;
+    for (let z = -6; z <= 6; z += dz) expected += P(Math.exp(mu + st * z)) * npdf(z) * dz;
     sd = spot * sig * Math.sqrt(T);
   }
   return { netPremium, maxProfit, maxLoss, unlimitedProfit, unlimitedLoss, breakevens: be, pop, expected, sd, rightSlope };
@@ -185,3 +187,10 @@ export const TEMPLATES = [
   { id: "callratio", name: "Call Ratio 1x2", legs: (w) => [L("CE", 0, 1), L("CE", w, -1, 2)] },
   { id: "putratio", name: "Put Ratio 1x2", legs: (w) => [L("PE", 0, 1), L("PE", -w, -1, 2)] },
 ];
+
+/** Realised P&L of exited legs: (exit - entry) * signed quantity. Open legs are valued separately (LTP - entry). */
+export function realizedPnl(legs, lot) {
+  let p = 0;
+  for (const l of legs) if (Number.isFinite(l.exit)) p += legQty(l, lot) * (l.exit - l.entry);
+  return p;
+}

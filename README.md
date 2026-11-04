@@ -23,6 +23,12 @@ Build multi-leg option strategies from the live Dhan option chain: 14 templates 
 - Lot sizes come from the scrip master at build time (editable in the tab if NSE/BSE revise them).
 - Dhan limits the option chain to 1 request / 3 s, so the first load takes ~3-6 s.
 
+## Live feed, charts, updates
+- Quotes poll about once a second while the market is open (Dhan caps the quote endpoint at 1 request/second, so this is the REST ceiling; the option chain is capped at 1 per 3 s). Outside market hours it polls every 15 s.
+- Tap any ticker (index, sector, stock, holding, watchlist, Payoff spot) for an OHLC chart: 1m to 1h presets, D/W/M, or any custom minutes, with SMA, volume, pan/zoom and a live last candle.
+- Payoff legs take an Entry and optional Exit price. Exited leg P&L = exit - entry; open leg P&L = LTP - entry. Realised P&L is folded into the curve, max/min, POP and expected value.
+- The APK is signed with a fixed committed key and a rising versionCode (the Actions run number), so new builds install over the old one. The signature fingerprint is printed in each run's summary. If your installed copy was signed with a different key, uninstall it once; after that updates are in place.
+
 ## Notes
 - The APK is signed with a debug key committed in `android-shell/debug.keystore` (so updates install over each other). Fine for a personal sideloaded app; do not publish it to a store.
 - Public repo is fine: no secrets are in it. The page is public but useless without your token.
