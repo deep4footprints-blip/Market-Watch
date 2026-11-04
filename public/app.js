@@ -1,6 +1,8 @@
 import { createDhanClient, buildSnapshot, buildPortfolio, buildWatch, fetchBook, bookInstruments } from "./dhan.js";
 import { createPayoff } from "./payoff-ui.js";
 import { createChart } from "./chart-ui.js";
+import { createLog } from "./pnllog.js";
+import { createLogUI } from "./log-ui.js";
 import { fetchSpark } from "./candles.js";
 import { morph } from "./dom.js";
 import * as V from "./viz.js";
@@ -36,6 +38,8 @@ const err = (message, code) => Object.assign(new Error(message), { code });
 
 const chart = createChart({ client, LS, friendly: (e) => friendly(e), getQuote });
 const openChart = (inst) => chart.open(inst);
+const plog = createLog(LS);
+const logui = createLogUI({ plog, LS });
 const pf = createPayoff({ client, LS, getInst: () => loadInst(), friendly: (e) => friendly(e), hasCreds: () => !!creds().token, getQuote, openChart });
 
 // ---------- credentials ----------
@@ -246,6 +250,11 @@ function render() {
     if (renderedTab !== "payoff") { $("#view").innerHTML = `<div id="pf"></div>`; renderedTab = "payoff"; pf.mount($("#pf")); }
     return chrome();
   }
+  if (tab === "log") {
+    if (renderedTab !== "log") { $("#view").innerHTML = `<div id="lgv"></div>`; renderedTab = "log"; logui.mount($("#lgv")); }
+    else logui.refresh();
+    return chrome();
+  }
   V.resetIds();
   const html = views[tab]();
   if (renderedTab !== tab) { $("#view").innerHTML = html; renderedTab = tab; if (tab === "settings") loadStatus(); }
@@ -259,23 +268,22 @@ function wanted() {
   const add = (seg, ids) => { (w[seg] ||= []).push(...ids); };
   const inst = data.inst;
   if (["overview", "sectors", "movers"].includes(tab) && inst?.indices) { add("IDX_I", inst.indices.map((i) => i.id)); add("NSE_EQ", inst.fno.map((s) => s.id)); }
-  if (["overview", "portfolio"].includes(tab) && feed.book) for (const [seg, ids] of Object.entries(bookInstruments(feed.book))) add(seg, ids);
+  if (feed.book) for (const [seg, ids] of Object.entries(bookInstruments(feed.book))) add(seg, ids);
   if (tab === "watch") add("NSE_EQ", LS.get("watch", []).map((x) => x.id));
-  if (tab === "payoff") { const u = pf.underlyingId(); if (u) add("IDX_I", [u]); }
+  if (tab === "payoff" || pf.hasOpen()) { const u = pf.underlyingId(); if (u) add("IDX_I", [u]); } // open strategy legs keep logging on any tab
   const ct = chart.target();
   if (ct) add(ct.seg, [ct.id]);
   return w;
 }
 
 async function ensureBook() {
-  if (!["overview", "portfolio"].includes(tab)) return;
+  if (!["overview", "portfolio", "log"].includes(tab) && !marketState()) return; // background P&L logging needs the book while the market is open
   if (feed.book && Date.now() - feed.bookAt < 15000) return;
   try { feed.book = await fetchBook(client); feed.bookAt = Date.now(); }
   catch (e) { if (tab === "portfolio") throw e; feed.bookAt = Date.now(); } // overview still works without the book
 }
 
 async function cycle() {
-  if (tab === "settings") return;
   if (!creds().token) { banner(friendly(err("", "NOKEY"))); render(); return; }
   if (tab !== "payoff" && !data.inst) await loadInst();
   await ensureBook();
@@ -285,12 +293,27 @@ async function cycle() {
     feed.at = Date.now();
   }
   if (data.inst?.indices && ["overview", "sectors", "movers"].includes(tab)) data.snap = buildSnapshot(data.inst, feed.quotes);
-  if (feed.book && ["overview", "portfolio"].includes(tab)) data.port = buildPortfolio(feed.book, feed.quotes);
+  if (feed.book) data.port = buildPortfolio(feed.book, feed.quotes);
   if (tab === "watch") data.watch = buildWatch(LS.get("watch", []), feed.quotes);
   banner("");
   render();
   chart.tick();
-  if (tab === "payoff") { pf.tick(); pf.refresh(); }
+  pf.tick();
+  if (tab === "payoff" || pf.hasOpen()) pf.refresh();
+  logSamples();
+}
+
+// One P&L sample per minute while the market is open: Dhan portfolio and the open Payoff strategy, logged separately.
+function logSamples() {
+  if (!marketState()) return;
+  const t = Date.now();
+  const p = data.port;
+  if (p && t - feed.at < 20000 && (p.summary.holdingsCount || p.positions.length)) {
+    const day = p.summary.dayPnl || 0, pos = p.summary.positionsPnl || 0;
+    plog.record("port", t, [day + pos, day, pos]);
+  }
+  const st = pf.sample();
+  if (st) plog.record(`st:${st.sid}`, t, [st.total, st.realized, st.mark], st.meta);
 }
 
 let wake = null;

@@ -29,6 +29,14 @@ Build multi-leg option strategies from the live Dhan option chain: 14 templates 
 - Payoff legs take an Entry and optional Exit price. Exited leg P&L = exit - entry; open leg P&L = LTP - entry. Realised P&L is folded into the curve, max/min, POP and expected value.
 - The APK is signed with a fixed committed key and a rising versionCode (the Actions run number), so new builds install over the old one. The signature fingerprint is printed in each run's summary. If your installed copy was signed with a different key, uninstall it once; after that updates are in place.
 
+## Payoff terminal v2
+- Layout follows the Quintal Mind terminal: stat grid, chart with BE/spot lines and an At-expiry / Today toggle, Buy-Sell pills with strike and lot steppers, saved Portfolios menu, option chain with a Greeks picker, IV under LTP, OI bars and an ATM badge, and a B/S popover with lots.
+- No strategy templates: you build legs from the chain.
+- Order log: every entry and exit is time-stamped (IST); edit the date/time or delete an order.
+- "Your risk, in plain English" translates portfolio greeks into rupee outcomes, plus a spot x time x IV stress table.
+- "Next step": ranks close / add / roll adjustments from the live chain by expected P&L + 0.5 x worst-5% average (model ranking, not advice). Apply edits only the simulator.
+- Log tab: one P&L sample per minute while the market is open and the app runs, kept separately for the Dhan portfolio and for each Payoff strategy.
+
 ## Notes
 - The APK is signed with a debug key committed in `android-shell/debug.keystore` (so updates install over each other). Fine for a personal sideloaded app; do not publish it to a store.
 - Public repo is fine: no secrets are in it. The page is public but useless without your token.

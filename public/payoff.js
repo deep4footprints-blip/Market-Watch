@@ -169,28 +169,119 @@ export function analyze(legs, lot, { spot, T, atmIv, r = RATE, offset = 0 }) {
   return { netPremium, maxProfit, maxLoss, unlimitedProfit, unlimitedLoss, breakevens: be, pop, expected, sd, rightSlope };
 }
 
-// ---- templates: offsets are in strike steps from ATM ----
-const L = (type, off, side, lots = 1) => ({ type, off, side, lots });
-export const TEMPLATES = [
-  { id: "lstraddle", name: "Long Straddle", legs: () => [L("CE", 0, 1), L("PE", 0, 1)] },
-  { id: "sstraddle", name: "Short Straddle", legs: () => [L("CE", 0, -1), L("PE", 0, -1)] },
-  { id: "lstrangle", name: "Long Strangle", legs: (w) => [L("CE", w, 1), L("PE", -w, 1)] },
-  { id: "sstrangle", name: "Short Strangle", legs: (w) => [L("CE", w, -1), L("PE", -w, -1)] },
-  { id: "bullcall", name: "Bull Call Spread", legs: (w) => [L("CE", 0, 1), L("CE", w, -1)] },
-  { id: "bearput", name: "Bear Put Spread", legs: (w) => [L("PE", 0, 1), L("PE", -w, -1)] },
-  { id: "bullput", name: "Bull Put Spread", legs: (w) => [L("PE", 0, -1), L("PE", -w, 1)] },
-  { id: "bearcall", name: "Bear Call Spread", legs: (w) => [L("CE", 0, -1), L("CE", w, 1)] },
-  { id: "condor", name: "Iron Condor", legs: (w) => [L("PE", -2 * w, 1), L("PE", -w, -1), L("CE", w, -1), L("CE", 2 * w, 1)] },
-  { id: "ironfly", name: "Iron Butterfly", legs: (w) => [L("PE", -w, 1), L("PE", 0, -1), L("CE", 0, -1), L("CE", w, 1)] },
-  { id: "callfly", name: "Call Butterfly", legs: (w) => [L("CE", -w, 1), L("CE", 0, -1, 2), L("CE", w, 1)] },
-  { id: "putfly", name: "Put Butterfly", legs: (w) => [L("PE", w, 1), L("PE", 0, -1, 2), L("PE", -w, 1)] },
-  { id: "callratio", name: "Call Ratio 1x2", legs: (w) => [L("CE", 0, 1), L("CE", w, -1, 2)] },
-  { id: "putratio", name: "Put Ratio 1x2", legs: (w) => [L("PE", 0, 1), L("PE", -w, -1, 2)] },
-];
-
 /** Realised P&L of exited legs: (exit - entry) * signed quantity. Open legs are valued separately (LTP - entry). */
 export function realizedPnl(legs, lot) {
   let p = 0;
   for (const l of legs) if (Number.isFinite(l.exit)) p += legQty(l, lot) * (l.exit - l.entry);
   return p;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Next-step optimizer. Enumerates single adjustments (exit a leg, add a leg, roll a leg to another strike) from the
+// live chain and ranks them by a transparent risk-adjusted score on the model distribution of the expiry index level:
+//     U = E[P&L] + 0.5 * ES5          (ES5 = mean P&L over the worst 5% of outcomes, so a fatter loss tail lowers U)
+// It ranks shapes under the model; it is not a forecast, ignores margin, and treats each order as costing COST per unit.
+// ---------------------------------------------------------------------------------------------
+export const COST = 0.5; // Rs per unit per order: slippage proxy for crossing the spread
+
+function distribution(spot, T, sig, r) {
+  const st = sig * Math.sqrt(T), mu = Math.log(spot) + (r - 0.5 * sig * sig) * T;
+  const zs = [], ws = [];
+  let tot = 0;
+  for (let z = -4; z <= 4.0001; z += 0.04) { const w = npdf(z); zs.push(Math.exp(mu + st * z)); ws.push(w); tot += w; }
+  return { xs: zs, ws: ws.map((w) => w / tot) };
+}
+
+/** Risk metrics of a leg set (+ constant realised P&L) over the model distribution. */
+export function riskMetrics(legs, lot, realized, dist) {
+  const n = dist.xs.length, ps = new Array(n);
+  let E = 0, pop = 0;
+  for (let i = 0; i < n; i++) {
+    const p = expiryPnl(legs, lot, dist.xs[i]) + realized;
+    ps[i] = p; E += p * dist.ws[i]; if (p > 1e-9) pop += dist.ws[i];
+  }
+  const idx = ps.map((_, i) => i).sort((a, b) => ps[a] - ps[b]);
+  let acc = 0, es = 0;
+  for (const i of idx) { const w = Math.min(dist.ws[i], 0.05 - acc); if (w <= 0) break; es += ps[i] * w; acc += w; }
+  es /= 0.05;
+  return { E, ES: es, pop, U: E + 0.5 * es };
+}
+
+/**
+ * legs: open legs {type,strike,side,lots,entry,iv}. quotes: [{type,strike,price,iv,oi?}] for the chain.
+ * Returns { base, legs:[{i,verdict,dU,roll?}], best, alts, hold } or null when there is nothing to evaluate.
+ */
+export function suggest(legs, lot, { spot, T, atmIv, realized = 0, quotes = [], r = RATE, maxStrikeDist = 0.06 }) {
+  if (!legs.length || !(T > 0) || !(atmIv > 0) || !(spot > 0)) return null;
+  const dist = distribution(spot, T, atmIv, r);
+  const priceOf = new Map(quotes.map((q) => [`${q.type}:${q.strike}`, q]));
+  const base = riskMetrics(legs, lot, realized, dist);
+  const refLots = Math.max(1, ...legs.map((l) => l.lots));
+  const fmtLeg = (sd, ty, K, lots, px) => ({ action: sd > 0 ? "BUY" : "SELL", type: ty, strike: K, lots, price: px });
+  const close = (l) => {
+    const q = priceOf.get(`${l.type}:${l.strike}`);
+    return q ? { q, pnl: legQty(l, lot) * (q.price - l.entry) - COST * Math.abs(legQty(l, lot)) } : null;
+  };
+  const cands = [];
+  const push = (kind, steps, nextLegs, nextRealized, extra = {}) => {
+    const m = riskMetrics(nextLegs, lot, nextRealized, dist);
+    cands.push({ kind, steps, legsAfter: nextLegs, realizedAfter: nextRealized, dU: m.U - base.U, after: m, ...extra });
+  };
+  // exits
+  const legVerdicts = legs.map((l, i) => {
+    const c = close(l);
+    if (!c) return { i, verdict: "HOLD", dU: 0 };
+    const rest = legs.filter((_, j) => j !== i);
+    const step = [fmtLeg(-l.side, l.type, l.strike, l.lots, c.q.price)];
+    if (rest.length || true) push("EXIT", step, rest, realized + c.pnl, { legIndex: i });
+    return { i, dU: cands[cands.length - 1].dU };
+  });
+  // adds (skip strikes already held open on that type: use lots +/- on the leg instead)
+  const held = new Set(legs.map((l) => `${l.type}:${l.strike}`));
+  // new orders only in liquid, ATM/OTM strikes (deep ITM options are capital-heavy and add nothing a spread would not)
+  const liquid = quotes.filter((q) => q.price >= 2 && (q.oi == null || q.oi > 0) && Math.abs(q.strike - spot) / spot <= maxStrikeDist
+    && (q.type === "CE" ? q.strike >= spot * 0.995 : q.strike <= spot * 1.005));
+  for (const q of liquid) {
+    if (held.has(`${q.type}:${q.strike}`)) continue;
+    for (const sd of [1, -1]) {
+      const nl = { type: q.type, strike: q.strike, side: sd, lots: refLots, entry: q.price, iv: q.iv || atmIv };
+      push("ADD", [fmtLeg(sd, q.type, q.strike, refLots, q.price)], [...legs, nl], realized - COST * refLots * lot);
+    }
+  }
+  // rolls: close a leg, open the same side/type/lots at another strike
+  legs.forEach((l, i) => {
+    const c = close(l);
+    if (!c) return;
+    for (const q of liquid) {
+      if (q.type !== l.type || q.strike === l.strike || held.has(`${q.type}:${q.strike}`)) continue;
+      const nl = { ...l, strike: q.strike, entry: q.price, iv: q.iv || atmIv, exit: undefined };
+      const rest = legs.map((x, j) => (j === i ? nl : x));
+      push("ROLL", [fmtLeg(-l.side, l.type, l.strike, l.lots, c.q.price), fmtLeg(l.side, q.type, q.strike, l.lots, q.price)], rest,
+        realized + c.pnl - COST * Math.abs(legQty(l, lot)), { legIndex: i });
+    }
+  });
+  cands.sort((a, b) => b.dU - a.dU);
+  const threshold = Math.max(300, 0.01 * Math.abs(base.ES));
+  const best = cands[0] && cands[0].dU > threshold ? cands[0] : null;
+  const alts = [];
+  const seen = new Set(best ? [best.kind] : []);
+  for (const c of cands) {
+    if (c === best || c.dU <= threshold || seen.has(c.kind)) continue;
+    seen.add(c.kind); alts.push(c);
+  }
+  // leg-by-leg: a leg is flagged EXIT/ROLL only if that move is among the five best adjustments overall, otherwise HOLD
+  const top5 = cands.slice(0, 5).filter((c) => c.dU > threshold);
+  const verdicts = legs.map((l, i) => {
+    const hit = top5.find((c) => (c.kind === "EXIT" || c.kind === "ROLL") && c.legIndex === i);
+    return { i, verdict: hit ? hit.kind : "HOLD", exitDU: legVerdicts[i].dU, roll: hit?.kind === "ROLL" ? { steps: hit.steps, dU: hit.dU } : null };
+  });
+  const exact = (c) => (c ? { ...c, exact: analyze(c.legsAfter, lot, { spot, T, atmIv, r, offset: c.realizedAfter }) } : c);
+  return {
+    base: { ...base, exact: analyze(legs, lot, { spot, T, atmIv, r, offset: realized }), g: portfolioGreeks(legs, lot, spot, T, 0, r) },
+    legs: verdicts,
+    best: exact(best),
+    alts: alts.slice(0, 3).map(exact),
+    hold: !best,
+    tested: cands.length,
+  };
 }

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { analyze, bsGreeks, bsPrice, expiryPnl, impliedVol, ncdf, portfolioGreeks, scenarioPnl, TEMPLATES } from "../public/payoff.js";
+import { analyze, bsGreeks, bsPrice, expiryPnl, impliedVol, ncdf, portfolioGreeks, scenarioPnl, suggest } from "../public/payoff.js";
 
 const close = (a, b, tol, msg) => assert.ok(Math.abs(a - b) <= tol, `${msg || ""} ${a} vs ${b}`);
 const leg = (type, strike, side, entry, lots = 1, iv = 0.2) => ({ type, strike, side, lots, entry, iv });
@@ -79,10 +79,28 @@ test("scenario curve converges to expiry payoff as T -> 0 and portfolio greeks s
   close(g.delta, 10 * (bsGreeks("CE", 100, 100, 0.1, 0.2).delta - bsGreeks("PE", 100, 100, 0.1, 0.2).delta), 1e-9);
 });
 
-test("every template resolves to legs with valid shape", () => {
-  for (const t of TEMPLATES) {
-    const ls = t.legs(2);
-    assert.ok(ls.length >= 2, t.id);
-    for (const l of ls) assert.ok((l.type === "CE" || l.type === "PE") && (l.side === 1 || l.side === -1) && l.lots >= 1, t.id);
-  }
+test("suggest: short straddle gets a protective wing that improves tail risk; empty/expired give null", () => {
+  const spot = 24000, T = 6 / 365, iv = 0.15, lot = 65;
+  const quotes = [];
+  for (let K = 22000; K <= 26000; K += 50) for (const ty of ["CE", "PE"]) quotes.push({ type: ty, strike: K, price: Math.max(bsPrice(ty, spot, K, T, iv), 0.05), iv, oi: 1000 });
+  const px = (ty, K) => quotes.find((q) => q.type === ty && q.strike === K).price;
+  const legs = [{ type: "CE", strike: 24000, side: -1, lots: 1, entry: px("CE", 24000), iv }, { type: "PE", strike: 24000, side: -1, lots: 1, entry: px("PE", 24000), iv }];
+  const s = suggest(legs, lot, { spot, T, atmIv: iv, quotes });
+  assert.ok(s.best, "expected a suggestion");
+  assert.equal(s.best.kind, "ADD");
+  assert.equal(s.best.steps[0].action, "BUY");
+  assert.ok(s.best.after.ES > s.base.ES, "tail must improve");
+  assert.ok(s.best.exact.maxLoss > s.base.exact.maxLoss || s.base.exact.unlimitedLoss);
+  assert.equal(suggest([], lot, { spot, T, atmIv: iv, quotes }), null);
+  assert.equal(suggest(legs, lot, { spot, T: 0, atmIv: iv, quotes }), null);
+});
+
+test("suggest: exiting a leg books (price - entry) * qty minus cost into realised", () => {
+  const spot = 24000, T = 6 / 365, iv = 0.15, lot = 65;
+  const quotes = [{ type: "CE", strike: 24000, price: 150, iv, oi: 1 }];
+  const legs = [{ type: "CE", strike: 24000, side: -1, lots: 1, entry: 200, iv }];
+  const s = suggest(legs, lot, { spot, T, atmIv: iv, quotes, realized: 0 });
+  const ex = [s.best, ...s.alts].find((c) => c && c.kind === "EXIT");
+  assert.ok(ex, "exit candidate exists (short call, price fell, tail unlimited)");
+  close(ex.realizedAfter, -65 * (150 - 200) - 0.5 * 65, 1e-9);
 });
