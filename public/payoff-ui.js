@@ -34,7 +34,7 @@ const fromLocalInput = (v) => { const t = Date.parse(`${v}:00+05:30`); return Nu
 const rid = () => `L${Math.random().toString(36).slice(2, 8)}`;
 const legTag = (l) => `${l.side > 0 ? "B" : "S"} ${num(l.strike, 0)} ${l.type}`;
 
-export function createPayoff({ client, LS, getInst, friendly, hasCreds, getQuote = () => null }) {
+export function createPayoff({ client, LS, getInst, friendly, hasCreds, getQuote = () => null, onSession = () => {} }) {
   const saved = LS.get("pf", {});
   const S = {
     und: UND[saved.und] ? saved.und : "nifty50",
@@ -53,7 +53,16 @@ export function createPayoff({ client, LS, getInst, friendly, hasCreds, getQuote
   };
   for (const l of S.legs) l.id ||= rid();
   const ivs = () => S.ivShift / 100; // slider is in vol points, IVs are decimals
-  const persist = () => LS.set("pf", { und: S.und, expiry: S.expiry, legs: S.legs, sid: S.sid, name: S.name, depth: S.depth, greekCols: S.greekCols, show: S.show, lot: S.lot });
+  let sessT = null;
+  const persist = () => {
+    LS.set("pf", { und: S.und, expiry: S.expiry, legs: S.legs, sid: S.sid, name: S.name, depth: S.depth, greekCols: S.greekCols, show: S.show, lot: S.lot });
+    if (S.sid && S.legs.length) { clearTimeout(sessT); sessT = setTimeout(() => onSession(S.sid, sessionMeta()), 800); } // definition for history rebuilds
+  };
+  const sessionMeta = () => ({
+    name: S.name || `${UND[S.und].name} ${S.expiry}`, und: UND[S.und].name, undKey: UND[S.und].key, expiry: S.expiry, lot: lotSize(),
+    legs: S.legs.map(legTag).join(" · "),
+    defs: S.legs.map(({ type, strike, side, lots, entry, exit, tIn, tOut, secId, iv }) => ({ type, strike, side, lots, entry, exit: fin(exit) ? exit : null, tIn: tIn ?? null, tOut: tOut ?? null, secId: secId ?? null, iv: iv ?? null })),
+  });
   const lotSize = () => S.lot[S.und] || S.instLots?.[UND[S.und].key] || UND[S.und].lot;
   const $ = (id) => S.root?.querySelector(id);
   const ensureSid = () => { if (!S.sid) S.sid = `s${Date.now().toString(36)}`; };
@@ -85,11 +94,12 @@ export function createPayoff({ client, LS, getInst, friendly, hasCreds, getQuote
     for (const l of S.legs) {
       const row = S.chain.byStrike.get(l.strike);
       l.iv = legIv(row, l.type, l.strike);
+      l.secId = side(row, l.type)?.secId ?? l.secId ?? null; // contract id: lets history be rebuilt from Dhan candles
       if (l.entry == null) l.entry = priceLeg(l.type, l.strike);
     }
     persist();
   }
-  const mkLeg = (type, K, sd, lots, entry) => ({ id: rid(), type, strike: K, side: sd, lots, entry: entry ?? priceLeg(type, K), iv: legIv(S.chain?.byStrike.get(K), type, K), exit: null, tIn: Date.now(), tOut: null });
+  const mkLeg = (type, K, sd, lots, entry) => ({ id: rid(), type, strike: K, side: sd, lots, entry: entry ?? priceLeg(type, K), iv: legIv(S.chain?.byStrike.get(K), type, K), exit: null, tIn: Date.now(), tOut: null, secId: side(S.chain?.byStrike.get(K), type)?.secId ?? null });
 
   function ctx() {
     const ch = S.chain;
@@ -596,7 +606,7 @@ export function createPayoff({ client, LS, getInst, friendly, hasCreds, getQuote
         ensureSid();
         const name = $("#pf-name").value.trim() || `${UND[S.und].name} ${new Date().toLocaleDateString("en-IN")}`;
         S.name = name;
-        S.strategies.unshift({ name, sid: S.sid, und: S.und, expiry: S.expiry, lot: lotSize(), legs: S.legs.map(({ id, type, strike, side, lots, entry, exit, tIn, tOut }) => ({ id, type, strike, side, lots, entry, exit: fin(exit) ? exit : null, tIn, tOut })) });
+        S.strategies.unshift({ name, sid: S.sid, und: S.und, expiry: S.expiry, lot: lotSize(), legs: S.legs.map(({ id, type, strike, side, lots, entry, exit, tIn, tOut, secId }) => ({ id, type, strike, side, lots, entry, exit: fin(exit) ? exit : null, tIn, tOut, secId })) });
         S.strategies = S.strategies.slice(0, 30); LS.set("pfSaved", S.strategies); persist();
         $("#pf-name").value = ""; S.saving = false; $("#pf-saverow").hidden = true; renderMenus();
       }
@@ -712,8 +722,7 @@ export function createPayoff({ client, LS, getInst, friendly, hasCreds, getQuote
       if (!S.sid || !S.chain || Date.now() - S.chainAt > 20000) return null;
       const c = ctx();
       if (!c || !c.legs.length) return null;
-      return { sid: S.sid, total: c.total, realized: c.realized, mark: c.mark,
-        meta: { name: S.name || `${UND[S.und].name} ${S.expiry}`, und: UND[S.und].name, expiry: S.expiry, legs: S.legs.map(legTag).join(" · ") } };
+      return { sid: S.sid, total: c.total, realized: c.realized, mark: c.mark, meta: sessionMeta() };
     },
     /** Keeps the chain fresh (3 s lane limit) whether or not the tab is visible, so P&L logging works in the background. */
     async refresh() {

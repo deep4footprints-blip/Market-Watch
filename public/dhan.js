@@ -153,7 +153,7 @@ export function buildSnapshot(inst, quotes, now = new Date()) {
   return { asOf: now.toISOString(), indices, movers: { gainers, losers, active }, breadth };
 }
 
-const holdingSeg = (ex) => (String(ex).toUpperCase() === "BSE" ? "BSE_EQ" : "NSE_EQ");
+export const holdingSeg = (ex) => (String(ex).toUpperCase() === "BSE" ? "BSE_EQ" : "NSE_EQ");
 const isEmptyErr = (e) => e instanceof DhanError && (e.code === "DH-1111" || /no (holdings|positions)/i.test(e.message));
 
 /** Network part: holdings + positions (no quotes). Empty portfolio is not an error. */
@@ -242,6 +242,7 @@ export async function loadWatch(client, items, now = new Date()) {
 const optSide = (o) =>
   o
     ? {
+        secId: num(o.security_id),
         ltp: num(o.last_price),
         iv: num(o.implied_volatility),
         delta: num(o.greeks?.delta),

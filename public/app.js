@@ -3,6 +3,7 @@ import { createPayoff } from "./payoff-ui.js";
 import { createChart } from "./chart-ui.js";
 import { createLog } from "./pnllog.js";
 import { createLogUI } from "./log-ui.js";
+import { backfillPortfolio, backfillStrategy } from "./backfill.js";
 import { fetchSpark } from "./candles.js";
 import { morph } from "./dom.js";
 import * as V from "./viz.js";
@@ -39,8 +40,14 @@ const err = (message, code) => Object.assign(new Error(message), { code });
 const chart = createChart({ client, LS, friendly: (e) => friendly(e), getQuote });
 const openChart = (inst) => chart.open(inst);
 const plog = createLog(LS);
-const logui = createLogUI({ plog, LS });
-const pf = createPayoff({ client, LS, getInst: () => loadInst(), friendly: (e) => friendly(e), hasCreds: () => !!creds().token, getQuote, openChart });
+const logui = createLogUI({
+  plog, LS,
+  rebuild: {
+    portfolio: async (days) => (feed.book ? backfillPortfolio({ client, plog, book: feed.book, days }) : { added: 0, skipped: true }),
+    strategy: (sid) => backfillStrategy({ client, plog, sid }),
+  },
+});
+const pf = createPayoff({ client, LS, getInst: () => loadInst(), friendly: (e) => friendly(e), hasCreds: () => !!creds().token, getQuote, openChart, onSession: (sid, meta) => plog.setMeta(sid, meta) });
 
 // ---------- credentials ----------
 function tokenExpiry(t) {

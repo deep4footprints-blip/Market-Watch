@@ -19,8 +19,10 @@ const SERIES = {
   st: { title: "Payoff strategy", cols: ["total", "realised", "open"], names: ["Total", "Realised", "Open (LTP − entry)"], colors: [V.C.acc, "#4f8cff", "#b08cff"], blurb: "Strategy P&L: exited legs (exit − entry) plus open legs (LTP − entry)." },
 };
 
-export function createLogUI({ plog, LS }) {
-  const S = { root: null, kind: LS.get("logKind", "port"), sid: null, day: null, scrub: null, off: {}, sig: "" };
+const SRC = { live: "Live samples (taken while the app was open)", recon: "Reconstructed from Dhan 1-minute history", mixed: "Live samples + reconstructed gaps" };
+
+export function createLogUI({ plog, LS, rebuild = {} }) {
+  const S = { root: null, kind: LS.get("logKind", "port"), sid: null, day: null, scrub: null, off: {}, sig: "", busy: false, status: "", last: {} };
   const $ = (q) => S.root?.querySelector(q);
 
   const seriesId = () => (S.kind === "port" ? "port" : S.sid ? `st:${S.sid}` : null);
@@ -67,6 +69,19 @@ export function createLogUI({ plog, LS }) {
     </svg>`;
   }
 
+  async function run(manual) {
+    const { id } = pick();
+    const key = S.kind === "port" ? "port" : id;
+    if (S.busy || !key || (!manual && Date.now() - (S.last[key] || 0) < 300000)) return;
+    S.busy = true; S.status = "Rebuilding from Dhan 1-minute history…"; draw(true);
+    try {
+      const res = S.kind === "port" ? await rebuild.portfolio?.(5) : await rebuild.strategy?.(S.sid.replace(/^st:/, ""));
+      if (res?.skipped) S.status = "";
+      else { S.last[key] = Date.now(); S.status = res && res.added ? `Filled ${res.added} missing minutes from Dhan history.` : "History is up to date."; }
+    } catch (e) { S.last[key] = Date.now(); S.status = `Rebuild failed: ${e.message || e}`; }
+    S.busy = false; draw(true);
+  }
+
   function html() {
     const cfg = SERIES[S.kind], { id, days } = pick();
     const tabs = `<div class="seg lgk"><button data-k="port" class="${S.kind === "port" ? "on" : ""}">Dhan portfolio</button><button data-k="st" class="${S.kind === "st" ? "on" : ""}">Payoff strategy</button></div>`;
@@ -76,8 +91,9 @@ export function createLogUI({ plog, LS }) {
       sess = ss.length ? `<label class="sess"><span class="n">Strategy</span><select id="lg-sid">${ss.map((x) => `<option value="${esc(x.id)}" ${x.id === S.sid ? "selected" : ""}>${esc(x.name || x.id)}</option>`).join("")}</select></label>${ss.find((x) => x.id === S.sid)?.legs ? `<div class="note">${esc(ss.find((x) => x.id === S.sid).legs)}</div>` : ""}` : "";
     }
     const chips = days.length ? `<div class="chips">${days.slice(0, 10).map((d) => `<button class="chip ${d === S.day ? "on" : ""}" data-day="${d}">${new Date(`${d}T00:00:00Z`).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" })}</button>`).join("")}</div>` : "";
+    const rb = `<div class="lgb"><button class="chip" id="lg-rb" ${S.busy ? "disabled" : ""}>↻ Rebuild history</button></div><div class="note" id="lg-st">${esc(S.status)}</div>`;
     if (!id || !S.day) {
-      return `<h2>P&amp;L log</h2>${tabs}${sess}<div class="empty big"><b>No samples yet</b><br>${S.kind === "port" ? "The Dhan portfolio is sampled once a minute while the market is open and the app is running." : "A strategy is sampled once a minute while it has open legs, the market is open and the app is running."}</div>`;
+      return `<h2>P&amp;L log</h2>${tabs}${sess}${rb}<div class="empty big"><b>No history yet</b><br>${S.kind === "port" ? "Tap Rebuild: the last trading days are rebuilt from Dhan's 1-minute candles of your holdings." : "Tap Rebuild: the P&amp;L since entry is rebuilt from the legs' 1-minute candles. Build or open a strategy in the Payoff tab first."}</div>`;
     }
     const pts = plog.get(id, S.day), sm = summarize(pts);
     const live = S.day === dayOf(Date.now());
@@ -90,10 +106,14 @@ export function createLogUI({ plog, LS }) {
         ${card("Trough", money(sm.lo[1]), cls(sm.lo[1]), hm(sm.lo[0]))}
         ${card("Max drawdown", money(sm.drawdown), cls(sm.drawdown), "peak to trough")}
       </div>
-      <div class="n" style="margin-top:6px">${esc(cfg.title)} · ${S.day} · ${sm.n} minute samples (${hm(sm.first[0])}–${hm(sm.last[0])})</div>
+      <div class="n" style="margin-top:6px">${esc(cfg.title)} · ${S.day} · ${sm.n} minutes (${hm(sm.first[0])}–${hm(sm.last[0])})</div>
+      <div class="note">${SRC[plog.source(id, S.day)] || ""}${plog.meta?.(id)?.recon === "model" && S.kind === "st" ? " · option prices modelled (Black-Scholes anchored to your entry) because Dhan candles were unavailable" : ""}</div>
       ${legend}<div id="lg-chart">${chart(pts, cfg)}</div><div id="lg-read" class="note">Drag across the chart to read the P&amp;L at any minute.</div>
-      <div class="lgb"><button class="chip" id="lg-csv">Copy CSV</button><button class="chip dn" id="lg-clr">Delete this day</button></div>
-      <div class="note">${esc(cfg.blurb)} One sample per minute (the latest in each minute). The phone only samples while this app is running, so gaps mean the app was closed.</div>`;
+      <div class="lgb"><button class="chip" id="lg-csv">Copy CSV</button><button class="chip" id="lg-rb" ${S.busy ? "disabled" : ""}>↻ Rebuild history</button><button class="chip dn" id="lg-clr">Delete this day</button></div>
+      <div class="note" id="lg-st">${esc(S.status)}</div>
+      <h3>${S.kind === "port" ? "Day P&amp;L at close, by day" : "Strategy P&amp;L at day end, by day"}</h3>
+      ${V.divBars(days.slice(0, 10).map((d) => { const a = plog.get(id, d), l = a[a.length - 1]; return { label: new Date(`${d}T00:00:00Z`).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" }), value: l ? l[1] : null, attrs: `data-day="${d}"` }; }), { fmt: money })}
+      <div class="note">${esc(cfg.blurb)} Live samples are taken once a minute while the app is open. Everything else is rebuilt from Dhan's 1-minute candles whenever you open this tab, so it does not need the app running. Rebuilt holdings P&amp;L assumes today's quantities; positions are not rebuilt.</div>`;
   }
 
   function scrub(e) {
@@ -122,9 +142,10 @@ export function createLogUI({ plog, LS }) {
 
   function bind(root) {
     root.addEventListener("click", async (e) => {
-      const t = e.target.closest("button");
+      const t = e.target.closest("button, [data-day]");
       if (!t) return;
-      if (t.dataset.k) { S.kind = t.dataset.k; LS.set("logKind", S.kind); S.day = null; S.off = {}; return draw(true); }
+      if (t.id === "lg-rb") return run(true);
+      if (t.dataset.k) { S.kind = t.dataset.k; LS.set("logKind", S.kind); S.day = null; S.off = {}; S.status = ""; draw(true); return run(false); }
       if (t.dataset.day) { S.day = t.dataset.day; return draw(true); }
       if (t.dataset.col) { S.off[t.dataset.col] = !S.off[t.dataset.col]; return draw(true); }
       if (t.id === "lg-clr") { const id = seriesId(); if (id && S.day) { plog.clearDay(id, S.day); S.day = null; draw(true); } return; }
@@ -136,14 +157,14 @@ export function createLogUI({ plog, LS }) {
         setTimeout(() => { t.textContent = "Copy CSV"; }, 1500);
       }
     });
-    root.addEventListener("change", (e) => { if (e.target.id === "lg-sid") { S.sid = e.target.value; S.day = null; draw(true); } });
+    root.addEventListener("change", (e) => { if (e.target.id === "lg-sid") { S.sid = e.target.value; S.day = null; S.status = ""; draw(true); run(false); } });
     root.addEventListener("pointerdown", (e) => { if (e.target.closest("#lg-chart")) { S.scrub = true; scrub(e); } });
     root.addEventListener("pointermove", (e) => { if (S.scrub || (e.pointerType === "mouse" && e.target.closest("#lg-chart"))) scrub(e); });
     for (const ev of ["pointerup", "pointercancel"]) root.addEventListener(ev, () => { S.scrub = false; });
   }
 
   return {
-    mount(root) { S.root = root; root.innerHTML = `<div id="lg-body"></div>`; bind(root); draw(true); },
+    mount(root) { S.root = root; root.innerHTML = `<div id="lg-body"></div>`; bind(root); draw(true); run(false); },
     refresh() { draw(false); },
   };
 }

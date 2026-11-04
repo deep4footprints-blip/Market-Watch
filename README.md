@@ -35,7 +35,7 @@ Build multi-leg option strategies from the live Dhan option chain: 14 templates 
 - Order log: every entry and exit is time-stamped (IST); edit the date/time or delete an order.
 - "Your risk, in plain English" translates portfolio greeks into rupee outcomes, plus a spot x time x IV stress table.
 - "Next step": ranks close / add / roll adjustments from the live chain by expected P&L + 0.5 x worst-5% average (model ranking, not advice). Apply edits only the simulator.
-- Log tab: one P&L sample per minute while the market is open and the app runs, kept separately for the Dhan portfolio and for each Payoff strategy.
+- Log tab: one P&L sample per minute while the app is open, kept separately for the Dhan portfolio and each Payoff strategy. Missing minutes and past days are rebuilt from Dhan 1-minute candles (option contracts for strategies, holdings for the portfolio) whenever the tab opens, so the app does not need to have been running. Day-by-day bars and per-day charts cover history.
 
 ## Notes
 - The APK is signed with a debug key committed in `android-shell/debug.keystore` (so updates install over each other). Fine for a personal sideloaded app; do not publish it to a store.
