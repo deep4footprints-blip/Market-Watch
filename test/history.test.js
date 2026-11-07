@@ -66,3 +66,13 @@ test("stale cache is refetched", async () => {
   const r = await h.ensure(items.slice(0, 1));
   assert.equal(r.fetched, 1);
 });
+
+test("fetchDaily falls back to the shorter range when the long range is refused, but not on auth errors", async () => {
+  const seen = [];
+  const client = { historical: async (b) => { seen.push(b.fromDate); if (seen.length === 1) throw Object.assign(new Error("range"), { code: "DH-905" }); return { timestamp: [WED_1630], open: [1], high: [1], low: [1], close: [1], volume: [1] }; } };
+  const h = createHistory({ client, store: memoryStore(), now: () => WED_1630 * 1000 });
+  const b = await h.fetchDaily({ seg: "NSE_EQ", id: 1, instrument: "EQUITY" });
+  assert.equal(b.length, 1); assert.equal(seen.length, 2); assert.ok(seen[0] < seen[1]);
+  const authFail = { historical: async () => { throw Object.assign(new Error("auth"), { code: "DH-901", status: 401 }); } };
+  await assert.rejects(createHistory({ client: authFail, store: memoryStore() }).fetchDaily({ seg: "NSE_EQ", id: 1, instrument: "EQUITY" }));
+});

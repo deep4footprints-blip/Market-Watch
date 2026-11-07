@@ -4,7 +4,8 @@
 import { toCandles, dayStr, istSod, nowSec } from "./candles.js";
 
 const DAY = 86400;
-export const HIST_DAYS = 620; // ~430 trading bars: enough for 252d RS + 200DMA + slope lookbacks
+export const HIST_DAYS = 1900;      // ~5 years: backtests need >3y; analytics only use the tail
+export const HIST_FALLBACK_DAYS = 620; // used if Dhan rejects the long range (~430 bars: enough for 252d RS + 200DMA)
 const REFETCH_MS = 6 * 3600e3; // do not hit Dhan again for an instrument fetched within this window
 
 /** Latest session whose daily bar is complete: today after 16:00 IST on a weekday, else the previous weekday. Holidays not modelled. */
@@ -54,9 +55,10 @@ export const keyOf = (seg, id) => `${seg}:${id}`;
 
 export function createHistory({ client, store, now = () => Date.now() }) {
   async function fetchDaily({ seg, id, instrument }) {
-    const t = Math.floor(now() / 1000);
-    const j = await client.historical({ securityId: String(id), exchangeSegment: seg, instrument, expiryCode: 0, oi: false, fromDate: dayStr(t - HIST_DAYS * DAY), toDate: dayStr(t) });
-    return toCandles(j, false);
+    const t = Math.floor(now() / 1000), call = (days) => client.historical({ securityId: String(id), exchangeSegment: seg, instrument, expiryCode: 0, oi: false, fromDate: dayStr(t - days * DAY), toDate: dayStr(t) });
+    try { const b = toCandles(await call(HIST_DAYS), false); if (b.length) return b; }
+    catch (e) { if (e.code === "NO_TOKEN" || e.status === 401 || e instanceof TypeError) throw e; } // long range refused -> retry shorter
+    return toCandles(await call(HIST_FALLBACK_DAYS), false);
   }
 
   const isFresh = (rec) => rec && now() - rec.fetchedAt < REFETCH_MS && dayOf(rec.lastT) >= expectedLastSession(Math.floor(now() / 1000));
