@@ -28,3 +28,30 @@ Sector index vs Nifty 50: `rel3 = (1+r3_sector)/(1+r3_nifty)-1`; momentum = `rel
 
 ## Options helpers (tested; not yet in the UI)
 PCR = Σ put / Σ call (OI or volume, all listed strikes). Max pain = strike minimising Σ OI × intrinsic payout to buyers (descriptive; does not predict settlement). ATM straddle = CE+PE LTP at the strike nearest spot; premium-implied move = straddle/spot (rough, assumes nothing about distribution). OI interpretation: price↑ & OI↑ long buildup; price↓ & OI↑ short buildup; price↑ & OI↓ short covering; price↓ & OI↓ long unwinding.
+
+---
+# Release 2 additions
+
+## Indicators (`indicators.js`, tested)
+SMA, EMA (seeded with the SMA), RSI(14) (Wilder; matches the StockCharts worked example), MACD(12,26,9), ATR(14) (Wilder), Bollinger(20,2) (population sd) with bandwidth, ADX/DMI(14) (Wilder), Stochastic(14,3), Donchian, relative volume (volume ÷ mean of the previous n sessions, today excluded).
+
+## Pattern detectors (`patterns.js`, rules listed in the Setups tab and in code)
+52-week breakout, flat base, VCP, high tight flag, cup-and-handle, double bottom, Darvas box, tight weekly closes, pullback to 20/50 DMA, pocket pivot, relative-volume breakout, volume climax, NR7/inside bar, 50/200 DMA cross, 20/50 EMA cross, RSI breakout/recovery. Each has numeric thresholds, a state (forming / near trigger / breakout / failed), a pivot and an invalidation level (stop). The **score** is the share of optional quality checks passed, not a probability. Detectors are rule-based approximations: they have no measured hit rate here, and no historical pattern-performance or false-positive study has been run. IPO base and gap-and-go are not implemented (need listing dates / intraday history).
+
+## Equity backtest (`backtest.js`, tested incl. a no-look-ahead test)
+Long-only, equal-weight slots, Nifty F&O stocks vs Nifty 50. Signals at the close of day i, fills at the open of day i+1 plus slippage; costs bps per side; optional filters (price > 200 DMA, Stage 2, min RS rating, near-high, cash when Nifty < 200 DMA), buffer ranks, stop-loss (exit next open). Reports total return, CAGR, volatility, Sharpe/Sortino (user risk-free rate), max drawdown and its longest duration, Calmar, win rate, profit factor, turnover, exposure, costs, monthly returns, full ledger, a fixed 70/30 stability split, and a parameter-grid spread. **Known biases, shown with every run:** survivorship (today's list), no point-in-time membership/fundamentals, price-only, unverified corporate-action adjustment, flat slippage with no volume constraint, no taxes. Runs are saved with config, data as-of date, universe size and engine version (`bt-1`) and are never overwritten. Options backtests, walk-forward and Monte-Carlo are not implemented (no historical option data).
+
+## Options lab (`optionlab.js`, tested)
+Spread scanner on the live chain: verticals, 1:2:1/1:3:2/1:4:3/1:5:4 butterflies, 1:2…1:5 ratio spreads, iron condors/butterflies. Buys at ask, sells at bid (LTP fallback flagged). Expiry payoff is exact (piecewise-linear evaluated at strikes and beyond both ends); breakevens interpolated. IV smile from OTM options and a 5%-wing skew; OI levels. **GEX estimate:** `gamma × OI × lot × spot² × 1%` with three explicit sign scenarios (calls+/puts−, all long, inverse); gamma from Dhan or Black-Scholes from the option's IV; gamma flip by re-pricing on a ±10% spot grid. It is an estimate: dealer positioning is not observable.
+
+## Calculators (`calc.js`, tested)
+CAGR, XIRR (bisection), SIP/step-up (monthly rate (1+a)^(1/12)−1, start-of-month), lump vs SIP, real return, compounding, drawdown recovery, FD vs market, rebalancing, overlap, position size (stop or ATR, lot rounding, cap), reward:risk, expected move, futures basis, option breakeven, Black-Scholes value/Greeks/IV, PCR/max pain from pasted chains, itemised order costs. The cost schedule (`CHARGES`) is an **editable, unverified assumption**: STT, exchange, stamp and brokerage rates change by circular and were not checked against current notifications.
+
+## Portfolio risk (`risk.js`, tested)
+Current value weights applied to the last ≤252 daily returns: annualised volatility, beta vs Nifty 50, max drawdown, historical-simulation VaR/ES at 95% (≥100 observations), Herfindahl/effective holdings, correlation matrix.
+
+## Alerts (`alerts.js`, tested)
+Rules are classed **live** (REST quote polling while the app is open) or **eod** (completed daily bars, re-checked after analytics refresh). States: active, paused, triggered, expired; once/recurring with cooldown; quiet hours (IST) mute announcements but still log. No delivery when the app is closed.
+
+## Journal (`journal.js`, tested)
+P&L = side × (exit − entry) × qty − fees; R = P&L ÷ (|entry − stop| × qty); win rate, profit factor, expectancy, max drawdown of the realised curve, grouping by setup/stock/side/mistake tag. Only recorded trades feed any figure.

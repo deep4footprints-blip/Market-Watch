@@ -7,6 +7,14 @@ import { backfillPortfolio, backfillStrategy } from "./backfill.js";
 import { fetchSpark } from "./candles.js";
 import { createHistory, idbStore } from "./history.js";
 import { createResearch } from "./research-ui.js";
+import { createSetups } from "./setups-ui.js";
+import { createLab } from "./lab-ui.js";
+import { createOptions } from "./options-ui.js";
+import { createTools } from "./tools-ui.js";
+import { createJournal } from "./journal-ui.js";
+import { createAlerts } from "./alerts-ui.js";
+import { createRisk } from "./risk-ui.js";
+import { createWatchlists } from "./watchlists.js";
 import { evaluate, STATUS_LABEL, STATUS_ICON, fmtAge } from "./providers.js";
 import { morph } from "./dom.js";
 import * as V from "./viz.js";
@@ -51,8 +59,23 @@ const logui = createLogUI({
     strategy: (sid) => backfillStrategy({ client, plog, sid }),
   },
 });
+const wl = createWatchlists(LS);
 const hist = createHistory({ client, store: idbStore() });
-const research = createResearch({ LS, history: hist, getInst: () => loadInst(), hasCreds: () => !!creds().token, friendly: (e) => friendly(e), onHistory: (r) => { feed.histErr = r.failed.length ? `${r.failed.length} failed` : ""; dstatAt = 0; } });
+const research = createResearch({ LS, wl, history: hist, getInst: () => loadInst(), hasCreds: () => !!creds().token, friendly: (e) => friendly(e), onHistory: (r) => { feed.histErr = r.failed.length ? `${r.failed.length} failed` : ""; dstatAt = 0; }, onCompute: ({ asOf }) => alerts.runEod(asOf) });
+const setups = createSetups({ LS, history: hist, getInst: () => loadInst(), hasCreds: () => !!creds().token, getRs: () => new Map([...(research.state().rows)].map(([k, r]) => [k, r.rs])) });
+const lab = createLab({ LS, history: hist, getInst: () => loadInst(), hasCreds: () => !!creds().token });
+const options = createOptions({ client, LS, getInst: () => loadInst(), hasCreds: () => !!creds().token, friendly: (e) => friendly(e) });
+const tools = createTools({ LS });
+const journal = createJournal({ LS, getRegime: () => research.state().regimeLabel });
+const risk = createRisk({ history: hist, getInst: () => loadInst(), getBook: () => feed.book, getPortfolio: () => data.port, hasCreds: () => !!creds().token });
+const alerts = createAlerts({ LS, getInst: () => loadInst(), getQuote: (seg, id) => getQuote(seg, id), getResearch: () => { const st = research.state(); return st.rows.size ? st : null; }, getHits: () => setups.hits(), getPcr: () => options.pcr(), onEvents: notifyAlerts });
+const PANES = { research, setups, lab, options, risk, journal, alerts, tools };
+function notifyAlerts(announce) {
+  if (!announce.length) return;
+  const b = $("#toast"); b.hidden = false; b.textContent = "🔔 " + announce.map((e) => e.message + (e.cls === "eod" ? " (EOD signal)" : "")).join(" · ");
+  clearTimeout(notifyAlerts.t); notifyAlerts.t = setTimeout(() => { b.hidden = true; }, 15000);
+  try { if ("Notification" in window && Notification.permission === "granted") for (const e of announce.slice(0, 3)) new Notification("Dhan Pulse alert", { body: e.message }); } catch {}
+}
 const pf = createPayoff({ client, LS, getInst: () => loadInst(), friendly: (e) => friendly(e), hasCreds: () => !!creds().token, getQuote, openChart, onSession: (sid, meta) => plog.setMeta(sid, meta) });
 
 // ---------- credentials ----------
@@ -214,15 +237,18 @@ const views = {
       <div class="note">Day P&amp;L = (LTP − prev close) × qty. Holdings in T+1 settlement may differ from your broker's number.</div>`;
   },
   watch() {
-    const items = LS.get("watch", []);
+    const items = wl.get(), act = wl.active();
     const q = new Map((data.watch?.items || []).map((i) => [i.id, i]));
     const rows = items.map((w) => {
       const x = q.get(Number(w.id)) || {};
       return `<div class="row sr" ${cAttr("NSE_EQ", w.id, "EQUITY", w.s, w.n || "")}><div class="s">${esc(w.s)}<small>${esc(w.n || "")}</small></div><div class="mid">${V.rangeBar(x.low, x.high, x.ltp, x.prev)}</div><div class="p">${inr(x.ltp)}</div>
         <div class="x ${sgn(x.pct)}">${pct(x.pct)} <button class="x-btn" data-rm="${w.id}" aria-label="Remove">✕</button></div></div>`;
     }).join("");
-    return `<h2>Watchlist</h2><input id="q" placeholder="Search NSE symbol…" autocomplete="off" autocapitalize="characters"><div id="sug">${wlSug}</div>
-      ${rows || empty("Search a symbol to add it.")}`;
+    const adv = items.filter((i) => (q.get(Number(i.id))?.pct || 0) > 0).length, dec = items.filter((i) => (q.get(Number(i.id))?.pct || 0) < 0).length;
+    return `<h2>Watchlists</h2><div class="rs-f"><select id="wl-sel" class="mini">${wl.names().map((n) => `<option ${n === act ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>
+      <button class="btn ghost" data-wl="new">New</button><button class="btn ghost" data-wl="ren">Rename</button><button class="btn ghost" data-wl="dup">Duplicate</button><button class="btn ghost" data-wl="del">Delete</button><button class="btn ghost" data-wl="csv">CSV</button><label class="btn ghost" style="margin:0">Import<input id="wl-imp" type="file" accept=".csv,text/csv,text/plain" hidden></label></div>
+      <input id="q" placeholder="Search NSE symbol…" autocomplete="off" autocapitalize="characters"><div id="sug">${wlSug}</div>
+      ${items.length ? `<div class="note">${items.length} stocks · ${adv} up · ${dec} down today · prices are Dhan REST quotes</div>` : ""}${rows || empty("Search a symbol to add it.")}`;
   },
   data() {
     if (!dstat) return skeleton();
@@ -271,7 +297,9 @@ function chrome() {
   $("#stamp").textContent = feed.at ? new Date(feed.at).toLocaleTimeString("en-IN", { hour12: false }) : "—";
   const open = marketState(), m = $("#mkt");
   m.textContent = open ? "LIVE" : "CLOSED"; m.classList.toggle("open", open);
-  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.t === tab));
+  document.querySelectorAll("[data-t]").forEach((b) => b.classList.toggle("on", b.dataset.t === tab));
+  const primary = ["overview", "research", "setups", "options", "portfolio", "watch"];
+  document.querySelector('[data-more]')?.classList.toggle("on", !primary.includes(tab));
 }
 
 function render() {
@@ -284,8 +312,8 @@ function render() {
     else logui.refresh();
     return chrome();
   }
-  if (tab === "research") {
-    if (renderedTab !== "research") { $("#view").innerHTML = `<div id="rsv"></div>`; renderedTab = "research"; research.mount($("#rsv")); }
+  if (PANES[tab]) {
+    if (renderedTab !== tab) { $("#view").innerHTML = `<div id="pane"></div>`; renderedTab = tab; PANES[tab].mount($("#pane")); }
     return chrome();
   }
   if (tab === "data") updateDataStatus().then(() => { if (tab === "data") render(); });
@@ -304,8 +332,9 @@ function wanted() {
   const inst = data.inst;
   if (["overview", "sectors", "movers"].includes(tab) && inst?.indices) { add("IDX_I", inst.indices.map((i) => i.id)); add("NSE_EQ", inst.fno.map((s) => s.id)); }
   if (feed.book) for (const [seg, ids] of Object.entries(bookInstruments(feed.book))) add(seg, ids);
-  if (tab === "watch") add("NSE_EQ", LS.get("watch", []).map((x) => x.id));
+  if (tab === "watch") add("NSE_EQ", wl.get().map((x) => x.id));
   if (tab === "payoff" || pf.hasOpen()) { const u = pf.underlyingId(); if (u) add("IDX_I", [u]); } // open strategy legs keep logging on any tab
+  for (const r of alerts.rules()) if (r.active && r.key && /^(priceAbove|priceBelow|pctMove)$/.test(r.kind)) { const [seg, id] = r.key.split(":"); add(seg, [id]); }
   const ct = chart.target();
   if (ct) add(ct.seg, [ct.id]);
   return w;
@@ -329,13 +358,14 @@ async function cycle() {
   }
   if (data.inst?.indices && ["overview", "sectors", "movers"].includes(tab)) data.snap = buildSnapshot(data.inst, feed.quotes);
   if (feed.book) data.port = buildPortfolio(feed.book, feed.quotes);
-  if (tab === "watch") data.watch = buildWatch(LS.get("watch", []), feed.quotes);
+  if (tab === "watch") data.watch = buildWatch(wl.get(), feed.quotes);
   banner("");
   render();
   chart.tick();
   pf.tick();
   if (tab === "payoff" || pf.hasOpen()) { pf.refresh(); if (tab === "payoff") feed.chainAt = Date.now(); }
   feed.quoteErr = "";
+  alerts.runLive();
   logSamples();
 }
 
@@ -374,12 +404,21 @@ async function loop() {
 // ---------- events (delegated; bound once) ----------
 $("#view").addEventListener("click", async (e) => {
   const rm = e.target.closest("[data-rm]");
-  if (rm) { LS.set("watch", LS.get("watch", []).filter((x) => String(x.id) !== rm.dataset.rm)); data.watch = buildWatch(LS.get("watch", []), feed.quotes); return render(); }
+  if (rm) { wl.removeItem(rm.dataset.rm); data.watch = buildWatch(wl.get(), feed.quotes); return render(); }
+  const wa = e.target.closest("[data-wl]")?.dataset.wl;
+  if (wa) {
+    const act = wl.active();
+    if (wa === "new") { const n = prompt("New watchlist name"); if (n) wl.create(n); }
+    else if (wa === "ren") { const n = prompt("Rename to", act); if (n) wl.rename(act, n); }
+    else if (wa === "dup") { const n = prompt("Duplicate as", act + " copy"); if (n) wl.duplicate(act, n); }
+    else if (wa === "del") { if (act !== "Watchlist" && confirm(`Delete "${act}"?`)) wl.remove(act); }
+    else if (wa === "csv") { const b = new Blob(["symbol,name,security_id\n" + wl.get().map((x) => `${x.s},"${(x.n || "").replace(/"/g, '""')}",${x.id}`).join("\n")], { type: "text/csv" }), a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = `${act}.csv`; a.click(); return; }
+    renderedTab = null; data.watch = buildWatch(wl.get(), feed.quotes); return render();
+  }
   const sg = e.target.closest("#sug [data-id]");
   if (sg) {
-    const w = LS.get("watch", []);
-    if (!w.some((x) => String(x.id) === sg.dataset.id) && w.length < 100) w.push({ id: Number(sg.dataset.id), s: sg.dataset.s, n: sg.dataset.n });
-    LS.set("watch", w); wlSug = ""; const q = $("#q"); if (q) q.value = ""; render(); return kick();
+    wl.add({ id: Number(sg.dataset.id), s: sg.dataset.s, n: sg.dataset.n });
+    wlSug = ""; const q = $("#q"); if (q) q.value = ""; render(); return kick();
   }
   if (e.target.closest("#saveTok")) {
     try { await saveToken($("#tok").value, $("#cid").value); $("#tok").value = ""; banner(""); loadStatus(); kick(); } catch (er) { banner(friendly(er)); }
@@ -400,9 +439,22 @@ $("#view").addEventListener("input", async (e) => {
   render();
 });
 
-$("#tabs").addEventListener("click", (e) => {
-  const b = e.target.closest("button"); if (!b) return;
-  tab = b.dataset.t; LS.set("tab", tab); banner(""); render(); kick();
+$("#view").addEventListener("change", async (e) => {
+  if (e.target.id === "wl-sel") { wl.setActive(e.target.value); renderedTab = null; data.watch = buildWatch(wl.get(), feed.quotes); render(); kick(); }
+  if (e.target.id === "wl-imp" && e.target.files[0]) {
+    const inst = await loadInst(), by = new Map((inst.eq || []).map((x) => [x[1], x])); let n = 0;
+    for (const line of (await e.target.files[0].text()).split(/\r?\n/).slice(1)) { const sym = line.split(",")[0].trim().toUpperCase(), x = by.get(sym); if (x && wl.add({ id: x[0], s: x[1], n: x[2] })) n++; }
+    banner(`Imported ${n} symbol(s) into ${wl.active()}`); renderedTab = null; render(); kick();
+  }
+});
+const moreEl = $("#more");
+document.addEventListener("click", (e) => {
+  const m = e.target.closest("[data-more]");
+  if (m) { moreEl.hidden = !moreEl.hidden; return; }
+  const b = e.target.closest("#tabs [data-t], #more [data-t]");
+  if (!moreEl.hidden && !e.target.closest("#more")) moreEl.hidden = true;
+  if (!b) return;
+  moreEl.hidden = true; tab = b.dataset.t; LS.set("tab", tab); banner(""); render(); kick(); window.scrollTo(0, 0);
 });
 $("#refresh").addEventListener("click", kick);
 document.addEventListener("visibilitychange", () => { if (!document.hidden) kick(); });

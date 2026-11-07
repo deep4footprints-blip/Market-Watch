@@ -145,7 +145,7 @@ export function summarise(bars, benchBars, weights = DEFAULT_RS_WEIGHTS) {
     sma20: smaAt(cl, 20), sma50: smaAt(cl, 50), sma100: smaAt(cl, 100), sma150: smaAt(cl, 150), sma200: smaAt(cl, 200),
     hi, lo, offHigh: hi > 0 ? 1 - px / hi : null, aboveLow: lo > 0 ? px / lo - 1 : null,
     isHigh: hi != null && px >= hi, isLow: lo != null && px <= lo,
-    rsNewHigh: rsLineNewHigh(line), stage: stageOf(cl), adtv: vol * px,
+    rsNewHigh: rsLineNewHigh(line), stage: stageOf(cl), stage5: stageOf(cl.slice(0, -5)), adtv: vol * px,
   };
 }
 

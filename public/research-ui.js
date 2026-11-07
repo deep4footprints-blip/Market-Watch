@@ -16,7 +16,7 @@ const COLS = [
   ["sym", "Symbol"], ["px", "Close"], ["r1m", "1M"], ["r3m", "3M"], ["r12m", "12M"], ["rs", "RS"], ["stage", "Stage"], ["tt", "Trend"], ["offHigh", "Off 52wH"], ["vs200", "vs 200D"],
 ];
 
-export function createResearch({ LS, history, getInst, hasCreds, friendly, onHistory = () => {} }) {
+export function createResearch({ LS, wl, history, getInst, hasCreds, friendly, onHistory = () => {}, onCompute = () => {} }) {
   const S = {
     root: null, sub: LS.get("rsub", "breadth"), rows: [], bench: null, vix: null, sectors: [], br: null, regime: null, asOf: null,
     run: null, prog: null, err: "", filters: { ...DEFAULT_F, ...LS.get("rfilters", {}) }, weights: { ...REGIME_DEFAULT, ...LS.get("rweights", {}) },
@@ -68,6 +68,7 @@ export function createResearch({ LS, history, getInst, hasCreds, friendly, onHis
     S.asOf = benchBars.length ? benchBars[benchBars.length - 1].t : null;
     S.computing = false; S.err = "";
     paint();
+    onCompute({ asOf: S.asOf });
   }
 
   const quadrant = (rel, mom) => (!fin(rel) || !fin(mom) ? null : rel >= 0 ? (mom >= 0 ? "Leading" : "Weakening") : mom >= 0 ? "Improving" : "Lagging");
@@ -153,7 +154,7 @@ export function createResearch({ LS, history, getInst, hasCreds, friendly, onHis
   function screenView() {
     if (!S.rows.length) return empty();
     const f = S.filters, all = filtered(), shown = all.slice(0, f.limit);
-    const watch = new Set(LS.get("watch", []).map((w) => String(w.id)));
+    const watch = new Set(wl.get().map((w) => String(w.id)));
     const ttTotal = S.rows[0]?.tt?.rules.length || 9;
     const rowsHtml = shown.map((r) => `<tr>
       <td class="sym" data-c="${esc(["NSE_EQ", r.id, "EQUITY", r.sym, r.name || ""].join("|"))}"><b>${esc(r.sym)}</b><small>${esc(r.name || "")}</small></td>
@@ -216,11 +217,9 @@ export function createResearch({ LS, history, getInst, hasCreds, friendly, onHis
       if (act === "wreset") { S.weights = { ...REGIME_DEFAULT }; LS.set("rweights", S.weights); return compute(); }
       const th = e.target.closest("[data-sort]");
       if (th) { const k = th.dataset.sort; S.filters.dir = S.filters.sort === k ? -S.filters.dir : (k === "sym" ? 1 : -1); S.filters.sort = k; saveF(); return paint(); }
-      const wl = e.target.closest("[data-wl]");
-      if (wl) {
-        const list = LS.get("watch", []);
-        if (!list.some((x) => String(x.id) === wl.dataset.wl) && list.length < 100) list.push({ id: Number(wl.dataset.wl), s: wl.dataset.s, n: wl.dataset.n });
-        LS.set("watch", list); wl.textContent = "★";
+      const wb = e.target.closest("[data-wl]");
+      if (wb) {
+        wl.add({ id: Number(wb.dataset.wl), s: wb.dataset.s, n: wb.dataset.n }); wb.textContent = "★";
       }
     });
     S.root.addEventListener("input", (e) => {
@@ -241,5 +240,6 @@ export function createResearch({ LS, history, getInst, hasCreds, friendly, onHis
   return {
     mount(el) { S.root = el; bind(); paint(); compute().catch((e) => { S.computing = false; S.err = String(e.message || e); paint(); }); },
     status: () => ({ run: !!S.run }),
+    state: () => ({ rows: new Map(S.rows.map((r) => [r.sym, r])), regime: S.regime?.score ?? null, regimeLabel: S.regime?.label || "", asOf: S.asOf }),
   };
 }

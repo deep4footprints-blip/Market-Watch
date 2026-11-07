@@ -15,18 +15,23 @@
 </header>
 <div id="banner" hidden></div>
 <main id="view"></main>
+<div id="toast" hidden role="status"></div>
 <nav class="tabs" id="tabs">
   <button data-t="overview" class="on">Overview</button>
-  <button data-t="sectors">Sectors</button>
-  <button data-t="movers">Movers</button>
   <button data-t="research">Research</button>
+  <button data-t="setups">Setups</button>
+  <button data-t="options">Options</button>
   <button data-t="portfolio">Portfolio</button>
   <button data-t="watch">Watch</button>
-  <button data-t="payoff">Payoff</button>
-  <button data-t="log">Log</button>
-  <button data-t="data">Data</button>
-  <button data-t="settings">⚙</button>
+  <button data-more aria-label="More">☰ More</button>
 </nav>
+<div id="more" class="more" hidden>
+  <div class="mg"><h4>Markets</h4><button data-t="overview">Overview</button><button data-t="sectors">Sectors</button><button data-t="movers">Movers</button><button data-t="research">Research</button><button data-t="setups">Setups</button></div>
+  <div class="mg"><h4>Derivatives</h4><button data-t="options">Options</button><button data-t="payoff">Payoff</button></div>
+  <div class="mg"><h4>Systematic</h4><button data-t="lab">Backtest</button><button data-t="alerts">Alerts</button><button data-t="watch">Watchlists</button></div>
+  <div class="mg"><h4>Portfolio &amp; journal</h4><button data-t="portfolio">Portfolio</button><button data-t="risk">Risk</button><button data-t="log">P&amp;L log</button><button data-t="journal">Journal</button></div>
+  <div class="mg"><h4>Reference</h4><button data-t="tools">Tools</button><button data-t="data">Data</button><button data-t="settings">Settings</button></div>
+</div>
 <div id="chartm" class="modal" hidden></div>
 <script src="app.js" type="module"></script>
 </body>
