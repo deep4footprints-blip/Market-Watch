@@ -37,6 +37,10 @@ Build multi-leg option strategies from the live Dhan option chain: 14 templates 
 - "Next step": ranks close / add / roll adjustments from the live chain by expected P&L + 0.5 x worst-5% average (model ranking, not advice). Apply edits only the simulator.
 - Log tab: one P&L sample per minute while the app is open, kept separately for the Dhan portfolio and each Payoff strategy. Missing minutes and past days are rebuilt from Dhan 1-minute candles (option contracts for strategies, holdings for the portfolio) whenever the tab opens, so the app does not need to have been running. Day-by-day bars and per-day charts cover history.
 
+## Research tab and Data tab (new)
+- **Research** builds EOD analytics from Dhan daily history cached on the device (first load ~90 s because of Dhan's chart-API pacing): market breadth (% above 20–200 DMA, 52-week highs/lows, stage mix), an editable-weight regime score, a screener on RS rating / Stage / trend template with CSV export, and a sector relative-strength table. Universe is today's Nifty F&O stock list; everything is derived and price-only. Methodology: `docs/METHODOLOGY.md`.
+- **Data** lists every dataset the product needs with source, freshness and status. Fundamentals, ownership, filings, flows, macro, funds and historical option data are **not connected** and are never substituted. See `docs/` (inventory, architecture, gap analysis, roadmap, checklist, test plan).
+
 ## Notes
 - The APK is signed with a debug key committed in `android-shell/debug.keystore` (so updates install over each other). Fine for a personal sideloaded app; do not publish it to a store.
 - Public repo is fine: no secrets are in it. The page is public but useless without your token.

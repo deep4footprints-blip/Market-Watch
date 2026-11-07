@@ -5,6 +5,9 @@ import { createLog } from "./pnllog.js";
 import { createLogUI } from "./log-ui.js";
 import { backfillPortfolio, backfillStrategy } from "./backfill.js";
 import { fetchSpark } from "./candles.js";
+import { createHistory, idbStore } from "./history.js";
+import { createResearch } from "./research-ui.js";
+import { evaluate, STATUS_LABEL, STATUS_ICON, fmtAge } from "./providers.js";
 import { morph } from "./dom.js";
 import * as V from "./viz.js";
 
@@ -27,7 +30,8 @@ const turn = (n) => (n == null ? "—" : n >= 1e7 ? `₹${(n / 1e7).toFixed(1)} 
 
 let tab = LS.get("tab", "overview");
 const data = { snap: null, port: null, watch: null, inst: null };
-const feed = { quotes: new Map(), book: null, bookAt: 0, at: 0 };
+const feed = { quotes: new Map(), book: null, bookAt: 0, at: 0, quoteErr: "", bookErr: "", chainAt: 0, histErr: "" };
+let dstat = null, dstatAt = 0;
 const sparks = new Map();
 let wlSug = "", renderedTab = null;
 
@@ -47,6 +51,8 @@ const logui = createLogUI({
     strategy: (sid) => backfillStrategy({ client, plog, sid }),
   },
 });
+const hist = createHistory({ client, store: idbStore() });
+const research = createResearch({ LS, history: hist, getInst: () => loadInst(), hasCreds: () => !!creds().token, friendly: (e) => friendly(e), onHistory: (r) => { feed.histErr = r.failed.length ? `${r.failed.length} failed` : ""; dstatAt = 0; } });
 const pf = createPayoff({ client, LS, getInst: () => loadInst(), friendly: (e) => friendly(e), hasCreds: () => !!creds().token, getQuote, openChart, onSession: (sid, meta) => plog.setMeta(sid, meta) });
 
 // ---------- credentials ----------
@@ -218,6 +224,13 @@ const views = {
     return `<h2>Watchlist</h2><input id="q" placeholder="Search NSE symbol…" autocomplete="off" autocapitalize="characters"><div id="sug">${wlSug}</div>
       ${rows || empty("Search a symbol to add it.")}`;
   },
+  data() {
+    if (!dstat) return skeleton();
+    const groups = [["source", "Dhan sources"], ["derived", "Derived datasets"], ["gap", "Not connected (no provider yet)"]];
+    return `<h2>Data &amp; methodology</h2><div class="note">Every dataset the product needs, with its source, freshness and status. Datasets marked not connected are never filled with substitute or invented numbers.</div>` +
+      groups.map(([k, title]) => sec(title, `<div class="tw"><table class="rs-t ds"><thead><tr><th>Dataset</th><th>Status</th><th>As of</th><th>Source · cadence</th></tr></thead><tbody>${dstat.filter((r) => r.kind === k).map((r) => `<tr><td><b>${esc(r.name)}</b><small>${esc(r.note || "")}</small></td><td><span class="ds-${r.status}">${STATUS_ICON[r.status]} ${STATUS_LABEL[r.status]}</span></td><td>${r.asOf ? fmtAge(Math.floor((Date.now() - r.asOf) / 1000)) : "—"}</td><td><small>${esc(r.provider)}${r.cadence ? " · " + esc(r.cadence) : ""}</small></td></tr>`).join("")}</tbody></table></div>`)).join("") +
+      `<div class="note">Methodology and source notes live in the repository: docs/METHODOLOGY.md, docs/PROVIDER_INTEGRATIONS.md, docs/DATA_SOURCE_GAP_ANALYSIS.md. Informational and educational use only; not investment advice. Nothing in this app places orders.</div>`;
+  },
   settings() {
     return `<h2>Settings</h2>
     <h3>Dhan credentials</h3>
@@ -244,6 +257,15 @@ async function loadStatus() {
   } catch (e) { el.textContent += `\nDhan: ${e instanceof TypeError ? "unreachable (offline or blocked)" : friendly(e)}`; }
 }
 
+async function updateDataStatus() {
+  if (Date.now() - dstatAt < 3000) return;
+  dstatAt = Date.now();
+  const inst = await loadInst(), c = creds();
+  const items = [...(inst.indices || []).filter((i) => ["nifty50", "vix"].includes(i.key) || i.group === "sector").map((i) => ({ seg: "IDX_I", id: i.id })), ...(inst.fno || []).map((x) => ({ seg: "NSE_EQ", id: x.id }))];
+  const h = await hist.status(items);
+  dstat = evaluate({ now: Date.now(), hasToken: !!c.token, tokenExp: tokenExpiry(c.token), marketOpen: marketState(), quoteAt: feed.at, quoteErr: feed.quoteErr, instGenerated: inst.generated ? Date.parse(inst.generated) : null, instFno: inst.fno?.length, hist: h, histErr: feed.histErr, chainAt: feed.chainAt, bookAt: feed.book ? feed.bookAt : 0, bookErr: feed.bookErr });
+}
+
 // ---------- rendering ----------
 function chrome() {
   $("#stamp").textContent = feed.at ? new Date(feed.at).toLocaleTimeString("en-IN", { hour12: false }) : "—";
@@ -262,10 +284,16 @@ function render() {
     else logui.refresh();
     return chrome();
   }
+  if (tab === "research") {
+    if (renderedTab !== "research") { $("#view").innerHTML = `<div id="rsv"></div>`; renderedTab = "research"; research.mount($("#rsv")); }
+    return chrome();
+  }
+  if (tab === "data") updateDataStatus().then(() => { if (tab === "data") render(); });
   V.resetIds();
   const html = views[tab]();
   if (renderedTab !== tab) { $("#view").innerHTML = html; renderedTab = tab; if (tab === "settings") loadStatus(); }
-  else if (tab !== "settings") morph($("#view"), html);
+  else if (tab !== "settings" && tab !== "data") morph($("#view"), html);
+  else if (tab === "data") $("#view").innerHTML = html;
   chrome();
 }
 
@@ -287,7 +315,7 @@ async function ensureBook() {
   if (!["overview", "portfolio", "log"].includes(tab) && !marketState()) return; // background P&L logging needs the book while the market is open
   if (feed.book && Date.now() - feed.bookAt < 15000) return;
   try { feed.book = await fetchBook(client); feed.bookAt = Date.now(); }
-  catch (e) { if (tab === "portfolio") throw e; feed.bookAt = Date.now(); } // overview still works without the book
+  catch (e) { feed.bookErr = friendly(e); if (tab === "portfolio") throw e; feed.bookAt = Date.now(); } // overview still works without the book
 }
 
 async function cycle() {
@@ -306,7 +334,8 @@ async function cycle() {
   render();
   chart.tick();
   pf.tick();
-  if (tab === "payoff" || pf.hasOpen()) pf.refresh();
+  if (tab === "payoff" || pf.hasOpen()) { pf.refresh(); if (tab === "payoff") feed.chainAt = Date.now(); }
+  feed.quoteErr = "";
   logSamples();
 }
 
@@ -334,6 +363,7 @@ async function loop() {
     let wait = marketState() || chart.target() ? 1000 : 15000;
     try { await cycle(); }
     catch (e) {
+      feed.quoteErr = e instanceof TypeError ? "Offline or Dhan unreachable" : friendly(e);
       banner(e instanceof TypeError ? "Offline or Dhan unreachable: retrying…" : friendly(e));
       wait = /DH-904|429/.test(String(e.code)) ? 5000 : 3000;
     }
